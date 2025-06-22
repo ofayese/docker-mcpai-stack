@@ -1,0 +1,15 @@
+{
+  "extends": ["config:base"],
+  "schedule": ["before 3am on monday"],
+  "automerge": true,
+  "packageRules": [
+    {
+      "matchDatasources": ["docker"],
+      "automerge": true
+    },
+    {
+      "matchDatasources": ["github-actions"],
+      "automerge": true
+    }
+  ]
+}

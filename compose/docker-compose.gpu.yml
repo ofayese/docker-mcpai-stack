@@ -3,16 +3,20 @@
 
 version: "3.9"
 
+# Use anchors for DRY and modern Compose
+x-runtime-gpu: &runtime_gpu
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: 1
+            capabilities: ["gpu"]
+
 services:
   # GPU-enabled model runner
   model-runner:
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: ["gpu"]
+    <<: *runtime_gpu
     environment:
       - RUNNER_HTTP_ADDR=0.0.0.0:8080
       - MODEL_CACHE=/models
@@ -23,13 +27,7 @@ services:
 
   # GPU-accelerated worker for embeddings
   mcp-worker:
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: ["gpu"]
+    <<: *runtime_gpu
     environment:
       - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
     profiles: ["gpu"]

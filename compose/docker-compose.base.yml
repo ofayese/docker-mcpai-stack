@@ -23,6 +23,15 @@ x-healthcheck: &default-healthcheck
   retries: 3
   start_period: 40s
 
+# Loki logging driver anchor
+x-loki-logging: &loki-logging
+  driver: loki
+  options:
+    loki-url: "http://loki:3100/loki/api/v1/push"
+    loki-retries: "5"
+    loki-batch-size: "400"
+    labels: "job,service"
+
 services:
   # ================================
   # VECTOR DATABASE
@@ -42,7 +51,7 @@ services:
       test: ["CMD", "wget", "-qO-", "http://localhost:6333/health"]
       <<: *default-healthcheck
     logging:
-      <<: *default-logging
+      <<: *loki-logging
     restart: unless-stopped
     profiles: ["core", "cpu", "gpu", "dev"]
 
@@ -65,7 +74,7 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       <<: *default-healthcheck
     logging:
-      <<: *default-logging
+      <<: *loki-logging
     restart: unless-stopped
     profiles: ["core", "cpu", "dev"]
 
@@ -90,7 +99,7 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
       <<: *default-healthcheck
     logging:
-      <<: *default-logging
+      <<: *loki-logging
     restart: unless-stopped
     profiles: ["core", "cpu", "gpu", "dev"]
 
@@ -115,7 +124,7 @@ services:
       test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:5000/health')"]
       <<: *default-healthcheck
     logging:
-      <<: *default-logging
+      <<: *loki-logging
     restart: unless-stopped
     profiles: ["core", "cpu", "gpu", "dev"]
 
@@ -138,7 +147,7 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
       <<: *default-healthcheck
     logging:
-      <<: *default-logging
+      <<: *loki-logging
     restart: unless-stopped
     profiles: ["ui", "dev"]
 
@@ -162,7 +171,7 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost/health"]
       <<: *default-healthcheck
     logging:
-      <<: *default-logging
+      <<: *loki-logging
     restart: unless-stopped
     profiles: ["proxy", "cpu", "gpu", "dev"]
 
@@ -188,7 +197,7 @@ services:
       test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
       <<: *default-healthcheck
     logging:
-      <<: *default-logging
+      <<: *loki-logging
     restart: unless-stopped
     profiles: ["monitoring", "dev"]
 
@@ -210,7 +219,26 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
       <<: *default-healthcheck
     logging:
-      <<: *default-logging
+      <<: *loki-logging
+    restart: unless-stopped
+    profiles: ["monitoring", "dev"]
+
+  # ================================
+  # LOKI LOGGING
+  # ================================
+  loki:
+    image: grafana/loki:2.9.0
+    container_name: loki
+    ports:
+      - "3100:3100"
+    volumes:
+      - loki_data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3100/ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     restart: unless-stopped
     profiles: ["monitoring", "dev"]
 
@@ -226,17 +254,20 @@ volumes:
     driver: local
   worker_temp:
     driver: local
-  
+
   # Proxy & certificates
   nginx_certs:
     driver: local
   nginx_logs:
     driver: local
-  
+
   # Monitoring
   prometheus_data:
     driver: local
   grafana_data:
+    driver: local
+
+  loki_data:
     driver: local
 
 networks:
