@@ -1,0 +1,50 @@
+# Docker MCP Stack - Development Configuration
+# Hot-reload and development-specific settings
+
+version: "3.9"
+
+services:
+  # Development overrides for hot-reload
+  mcp-api:
+    volumes:
+      - ../services/mcp-api/src:/app/src:delegated
+      - mcp_data:/data
+    command: ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "4000", "--reload"]
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://model-runner:8080/v1}
+      MODEL_API_URL: http://model-runner:8080/v1
+      PROMETHEUS_MULTIPROC_DIR: /tmp
+      PYTHONUNBUFFERED: 1
+
+  mcp-worker:
+    volumes:
+      - ../services/mcp-worker/src:/app/src:delegated
+      - mcp_data:/data
+      - worker_temp:/tmp
+    command: ["python", "-m", "src.worker", "--reload"]
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://model-runner:8080/v1}
+      MODEL_API_URL: http://model-runner:8080/v1
+      PROMETHEUS_MULTIPROC_DIR: /tmp
+      PYTHONUNBUFFERED: 1
+
+  ui:
+    volumes:
+      - ../services/ui/src:/app/src:delegated
+    command: ["streamlit", "run", "src/app.py", "--server.port", "8501", "--server.address", "0.0.0.0", "--server.fileWatcherType", "poll"]
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://model-runner:8080/v1}
+      MODEL_API_URL: http://model-runner:8080/v1
+      STREAMLIT_SERVER_PORT: 8501
+      STREAMLIT_SERVER_ADDRESS: 0.0.0.0
+      PYTHONUNBUFFERED: 1
+
+  # Model runner with mounted source for development
+  model-runner:
+    volumes:
+      - ../services/model-runner/src:/app/src:delegated
+      - models_cache:/models
+      - model_config:/config

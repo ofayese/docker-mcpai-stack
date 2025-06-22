@@ -1,0 +1,143 @@
+{
+  "name": "Docker MCP Stack - Development Environment",
+  "dockerComposeFile": [
+    "../compose/docker-compose.base.yml",
+    "../compose/docker-compose.dev.yml"
+  ],
+  "service": "mcp-api",
+  "workspaceFolder": "/app",
+  
+  // Services to run when opening devcontainer
+  "runServices": [
+    "qdrant",
+    "model-runner", 
+    "mcp-api",
+    "mcp-worker",
+    "ui"
+  ],
+  
+  // Commands to run after container creation
+  "postCreateCommand": "pip install -e . && pre-commit install",
+  
+  // Forward ports for development
+  "forwardPorts": [
+    4000,  // MCP API
+    6333,  // Qdrant
+    8080,  // Model Runner
+    8501,  // Streamlit UI
+    9090,  // Prometheus
+    3000   // Grafana
+  ],
+  
+  // Port attributes
+  "portsAttributes": {
+    "4000": {
+      "label": "MCP API",
+      "onAutoForward": "openBrowser"
+    },
+    "8501": {
+      "label": "Streamlit UI",
+      "onAutoForward": "openBrowser"
+    },
+    "6333": {
+      "label": "Qdrant Dashboard",
+      "onAutoForward": "openBrowserOnce"
+    }
+  },
+  
+  // Development features
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "version": "latest",
+      "enableNonRootDocker": "true"
+    },
+    "ghcr.io/devcontainers/features/git:1": {
+      "version": "latest"
+    },
+    "ghcr.io/devcontainers/features/github-cli:1": {
+      "version": "latest"
+    },
+    "ghcr.io/devcontainers/features/python:1": {
+      "version": "3.12",
+      "installTools": true
+    }
+  },
+  
+  // VS Code customizations
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        // Python development
+        "ms-python.python",
+        "ms-python.black-formatter", 
+        "ms-python.isort",
+        "ms-python.flake8",
+        "ms-python.mypy-type-checker",
+        
+        // Docker & Compose
+        "ms-azuretools.vscode-docker",
+        "ms-vscode-remote.remote-containers",
+        
+        // API development
+        "humao.rest-client",
+        "42crunch.vscode-openapi",
+        
+        // Git & GitHub
+        "github.vscode-pull-request-github",
+        "github.copilot",
+        "github.copilot-chat",
+        
+        // Utilities
+        "esbenp.prettier-vscode",
+        "redhat.vscode-yaml",
+        "ms-vscode.vscode-json",
+        "streetsidesoftware.code-spell-checker",
+        "gruntfuggly.todo-tree",
+        
+        // Monitoring & Logs
+        "ms-kubernetes-tools.vscode-kubernetes-tools"
+      ],
+      
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "python.linting.enabled": true,
+        "python.linting.flake8Enabled": true,
+        "python.formatting.provider": "black",
+        "python.sortImports.args": ["--profile", "black"],
+        "editor.formatOnSave": true,
+        "editor.codeActionsOnSave": {
+          "source.organizeImports": "explicit"
+        },
+        "files.watcherExclude": {
+          "**/node_modules/**": true,
+          "**/.git/**": true,
+          "**/venv/**": true,
+          "**/__pycache__/**": true
+        },
+        "terminal.integrated.defaultProfile.linux": "bash"
+      }
+    }
+  },
+  
+  // Environment variables for development
+  "containerEnv": {
+    "ENVIRONMENT": "development",
+    "PYTHONUNBUFFERED": "1",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "DEBUG": "true"
+  },
+  
+  // Mount the Docker socket for Docker-in-Docker
+  "mounts": [
+    "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
+  ],
+  
+  // Run as non-root user
+  "remoteUser": "vscode",
+  
+  // Lifecycle scripts
+  "initializeCommand": "echo 'Initializing Docker MCP Stack development environment...'",
+  "onCreateCommand": "echo 'Container created successfully!'",
+  "updateContentCommand": "pip install -r requirements.txt",
+  "postStartCommand": "echo 'Development environment ready! 🚀'"
+}

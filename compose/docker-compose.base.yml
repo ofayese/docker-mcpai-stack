@@ -1,0 +1,245 @@
+# Docker MCP Stack - Base Configuration
+# Cross-platform GenAI development environment with modular services
+# Supports both CPU and GPU acceleration
+
+version: "3.9"
+
+# Common configurations using YAML anchors for DRY principles
+x-common-env: &common-env
+  QDRANT_URL: http://qdrant:6333
+  OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://model-runner:8080/v1}
+  MODEL_API_URL: http://model-runner:8080/v1
+  PROMETHEUS_MULTIPROC_DIR: /tmp
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-healthcheck: &default-healthcheck
+  interval: 30s
+  timeout: 10s
+  retries: 3
+  start_period: 40s
+
+services:
+  # ================================
+  # VECTOR DATABASE
+  # ================================
+  qdrant:
+    image: qdrant/qdrant:v1.9.0
+    container_name: qdrant
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+      - "${QDRANT_GRPC_PORT:-6334}:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__SERVICE__GRPC_PORT=6334
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:6333/health"]
+      <<: *default-healthcheck
+    logging:
+      <<: *default-logging
+    restart: unless-stopped
+    profiles: ["core", "cpu", "gpu", "dev"]
+
+  # ================================
+  # MODEL RUNNER (Unified LLM API)
+  # ================================
+  model-runner:
+    build: ../services/model-runner
+    container_name: model-runner
+    ports:
+      - "${MODEL_RUNNER_PORT:-8080}:8080"
+    volumes:
+      - models_cache:/models
+      - model_config:/config
+    environment:
+      - RUNNER_HTTP_ADDR=0.0.0.0:8080
+      - MODEL_CACHE=/models
+      - CONFIG_PATH=/config
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      <<: *default-healthcheck
+    logging:
+      <<: *default-logging
+    restart: unless-stopped
+    profiles: ["core", "cpu", "dev"]
+
+  # ================================
+  # MCP API GATEWAY
+  # ================================
+  mcp-api:
+    build: ../services/mcp-api
+    container_name: mcp-api
+    ports:
+      - "${MCP_API_PORT:-4000}:4000"
+    environment:
+      <<: *common-env
+    volumes:
+      - mcp_data:/data
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      model-runner:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
+      <<: *default-healthcheck
+    logging:
+      <<: *default-logging
+    restart: unless-stopped
+    profiles: ["core", "cpu", "gpu", "dev"]
+
+  # ================================
+  # MCP WORKER (Background Processing)
+  # ================================
+  mcp-worker:
+    build: ../services/mcp-worker
+    container_name: mcp-worker
+    environment:
+      <<: *common-env
+    volumes:
+      - mcp_data:/data
+      - worker_temp:/tmp
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      model-runner:
+        condition: service_healthy
+    command: ["python", "-m", "worker.main"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:5000/health')"]
+      <<: *default-healthcheck
+    logging:
+      <<: *default-logging
+    restart: unless-stopped
+    profiles: ["core", "cpu", "gpu", "dev"]
+
+  # ================================
+  # STREAMLIT UI
+  # ================================
+  ui:
+    build: ../services/ui
+    container_name: mcp-ui
+    ports:
+      - "${UI_PORT:-8501}:8501"
+    environment:
+      <<: *common-env
+      STREAMLIT_SERVER_PORT: 8501
+      STREAMLIT_SERVER_ADDRESS: 0.0.0.0
+    depends_on:
+      mcp-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      <<: *default-healthcheck
+    logging:
+      <<: *default-logging
+    restart: unless-stopped
+    profiles: ["ui", "dev"]
+
+  # ================================
+  # REVERSE PROXY
+  # ================================
+  nginx:
+    build: ../nginx
+    container_name: nginx-proxy
+    ports:
+      - "${NGINX_HTTP_PORT:-80}:80"
+      - "${NGINX_HTTPS_PORT:-443}:443"
+      - "${NGINX_OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - nginx_certs:/etc/nginx/certs
+      - nginx_logs:/var/log/nginx
+    depends_on:
+      - model-runner
+      - mcp-api
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      <<: *default-healthcheck
+    logging:
+      <<: *default-logging
+    restart: unless-stopped
+    profiles: ["proxy", "cpu", "gpu", "dev"]
+
+  # ================================
+  # MONITORING STACK
+  # ================================
+  prometheus:
+    image: prom/prometheus:v2.47.0
+    container_name: prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+      <<: *default-healthcheck
+    logging:
+      <<: *default-logging
+    restart: unless-stopped
+    profiles: ["monitoring", "dev"]
+
+  grafana:
+    image: grafana/grafana:10.1.0
+    container_name: grafana
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ../grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ../grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    depends_on:
+      - prometheus
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      <<: *default-healthcheck
+    logging:
+      <<: *default-logging
+    restart: unless-stopped
+    profiles: ["monitoring", "dev"]
+
+volumes:
+  # Data persistence
+  qdrant_data:
+    driver: local
+  models_cache:
+    driver: local
+  model_config:
+    driver: local
+  mcp_data:
+    driver: local
+  worker_temp:
+    driver: local
+  
+  # Proxy & certificates
+  nginx_certs:
+    driver: local
+  nginx_logs:
+    driver: local
+  
+  # Monitoring
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+networks:
+  default:
+    name: mcp-stack
+    driver: bridge

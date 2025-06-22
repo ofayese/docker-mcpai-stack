@@ -1,0 +1,39 @@
+# Docker MCP Stack - Windows/WSL2 Configuration
+# Platform-specific overrides for Windows development
+
+version: "3.9"
+
+services:
+  # On Windows, disable model-runner container and point to host Ollama
+  model-runner:
+    profiles: ["never"]  # Effectively disables this service
+
+  # Update services to point to host-based Ollama
+  mcp-api:
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      OLLAMA_BASE_URL: http://host.docker.internal:11434/v1
+      MODEL_API_URL: http://host.docker.internal:11434/v1
+      PROMETHEUS_MULTIPROC_DIR: /tmp
+
+  mcp-worker:
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      OLLAMA_BASE_URL: http://host.docker.internal:11434/v1
+      MODEL_API_URL: http://host.docker.internal:11434/v1
+      PROMETHEUS_MULTIPROC_DIR: /tmp
+
+  ui:
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      OLLAMA_BASE_URL: http://host.docker.internal:11434/v1
+      MODEL_API_URL: http://host.docker.internal:11434/v1
+      STREAMLIT_SERVER_PORT: 8501
+      STREAMLIT_SERVER_ADDRESS: 0.0.0.0
+
+  # Nginx proxy routes to host Ollama
+  nginx:
+    volumes:
+      - ../nginx/nginx.windows.conf:/etc/nginx/nginx.conf:ro
+      - nginx_certs:/etc/nginx/certs
+      - nginx_logs:/var/log/nginx
