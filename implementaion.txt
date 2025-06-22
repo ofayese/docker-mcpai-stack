@@ -1,0 +1,5221 @@
+# Implementation Plan for Enhanced docker-mcpai-stack
+
+I'll help you implement the monitoring and metrics components for your docker-mcpai-stack. Based on your repository structure and requirements, here's how we can enhance the monitoring capabilities.
+
+## 1. Add Prometheus Metrics to MCP API
+
+Let's first enhance the MCP API to expose more detailed metrics:
+
+```python
+# File: /home/ofayese/docker-mcpai-stack/services/mcp-api/src/core/monitoring.py
+from prometheus_client import Counter, Histogram, Gauge, Info
+import time
+
+# Request metrics
+request_count = Counter(
+    'mcp_api_requests_total',
+    'Total API requests',
+    ['method', 'endpoint', 'status']
+)
+
+request_duration = Histogram(
+    'mcp_api_request_duration_seconds',
+    'Request duration in seconds',
+    ['method', 'endpoint'],
+    buckets=(0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1.0, 2.5, 5.0, 7.5, 10.0)
+)
+
+# Model metrics
+model_inference_count = Counter(
+    'mcp_model_inferences_total',
+    'Total model inference requests',
+    ['model_id', 'status']
+)
+
+model_inference_duration = Histogram(
+    'mcp_model_inference_duration_seconds',
+    'Model inference duration in seconds',
+    ['model_id'],
+    buckets=(0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 30.0, 60.0)
+)
+
+# System metrics
+active_requests = Gauge(
+    'mcp_api_active_requests',
+    'Number of active requests being processed'
+)
+
+system_info = Info(
+    'mcp_api_system_info',
+    'System information about the MCP API'
+)
+
+def setup_metrics():
+    """Initialize metrics with system information"""
+    import platform
+    import os
+
+    system_info.info({
+        'version': os.getenv('VERSION', 'unknown'),
+        'python_version': platform.python_version(),
+        'platform': platform.platform(),
+        'cpu_count': str(os.cpu_count())
+    })
+
+class MetricsMiddleware:
+    """Middleware to track request metrics"""
+
+    async def __call__(self, request, call_next):
+        active_requests.inc()
+        start_time = time.time()
+
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+
+            # Record request metrics
+            request_count.labels(
+                method=request.method,
+                endpoint=request.url.path,
+                status=status_code
+            ).inc()
+
+            request_duration.labels(
+                method=request.method,
+                endpoint=request.url.path
+            ).observe(time.time() - start_time)
+
+            return response
+        except Exception as e:
+            request_count.labels(
+                method=request.method,
+                endpoint=request.url.path,
+                status=500
+            ).inc()
+            raise e
+        finally:
+            active_requests.dec()
+```
+
+## 2. Update the MCP API Main File to Use the Metrics Middleware
+
+```python
+# File: /home/ofayese/docker-mcpai-stack/services/mcp-api/src/main.py
+from fastapi.responses import JSONResponse, Response
+from .core.config import settings
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Request
+from .routers import chat, models, health, mcp
+import structlog
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+from .core.monitoring import setup_metrics, MetricsMiddleware
+
+"""
+MCP API Gateway - Main FastAPI application
+Provides unified API for Model Context Protocol services
+"""
+
+import uvicorn
+
+# Configure structured logging
+structlog.configure(
+    # redacted
+)
+
+logger = structlog.get_logger()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan events"""
+    logger.info("Starting MCP API Gateway", version=settings.VERSION)
+
+    # Initialize metrics
+    setup_metrics()
+
+    # Initialize connections
+    # Set up Qdrant client for vector store
+    try:
+        from qdrant_client import QdrantClient
+        app.state.qdrant = QdrantClient(url=settings.QDRANT_URL)
+        logger.info("Initialized Qdrant client", url=settings.QDRANT_URL)
+    except Exception as e:
+        logger.error("Failed to initialize Qdrant client", error=str(e))
+        raise
+
+    # Check Model Runner health
+    try:
+        import httpx
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{settings.MODEL_API_URL}/health", timeout=5)
+        if resp.status_code != 200:
+            raise RuntimeError(f"Model runner unhealthy: {resp.status_code}")
+        logger.info("Model runner is healthy")
+    except Exception as e:
+        logger.error("Model runner health check failed", error=str(e))
+        raise
+
+    yield
+
+    logger.info("Shutting down MCP API Gateway")
+
+# Create FastAPI app
+app = FastAPI(
+    title="MCP API Gateway",
+    description="Unified API for Model Context Protocol services",
+    version=settings.VERSION,
+    lifespan=lifespan
+)
+
+# Add metrics middleware
+app.add_middleware(MetricsMiddleware)
+
+# Include routers
+app.include_router(health.router, prefix="/health", tags=["health"])
+app.include_router(models.router, prefix="/v1/models", tags=["models"])
+app.include_router(chat.router, prefix="/v1/chat", tags=["chat"])
+app.include_router(mcp.router, prefix="/mcp", tags=["mcp"])
+
+@app.get("/metrics")
+async def metrics():
+    """Endpoint for exposing Prometheus metrics"""
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+@app.get("/")
+async def root():
+    """Root endpoint with API information"""
+    return {
+        "name": "MCP API Gateway",
+        "version": settings.VERSION,
+        "status": "operational"
+    }
+
+if __name__ == "__main__":
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=4000,
+        reload=True if os.getenv("ENVIRONMENT") == "development" else False
+    )
+```
+
+## 3. Create a Prometheus Configuration File
+
+```yaml
+# File: /home/ofayese/docker-mcpai-stack/prometheus/prometheus.yml
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'mcp-api'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['mcp-api:4000']
+        labels:
+          service: 'mcp-api'
+
+  - job_name: 'model-runner'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['model-runner:8080']
+        labels:
+          service: 'model-runner'
+
+  - job_name: 'mcp-worker'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['mcp-worker:8000']
+        labels:
+          service: 'mcp-worker'
+
+  - job_name: 'prometheus'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          service: 'prometheus'
+```
+
+## 4. Update the UI to Display Metrics Dashboard
+
+Let's enhance the UI to display metrics from Prometheus:
+
+```python
+# File: /home/ofayese/docker-mcpai-stack/services/ui/src/app.py
+import streamlit as st
+import requests
+import plotly.graph_objects as go
+import pandas as pd
+import time
+
+# Add this function to fetch metrics from Prometheus
+def get_prometheus_metrics():
+    """Fetch metrics from Prometheus"""
+    try:
+        # Query for API request count
+        api_requests = requests.get(
+            "http://prometheus:9090/api/v1/query",
+            params={
+                "query": "sum(mcp_api_requests_total) by (endpoint)"
+            },
+            timeout=5
+        ).json()
+
+        # Query for model inference duration
+        model_duration = requests.get(
+            "http://prometheus:9090/api/v1/query",
+            params={
+                "query": "sum(rate(mcp_model_inference_duration_seconds_sum[5m])) by (model_id) / sum(rate(mcp_model_inference_duration_seconds_count[5m])) by (model_id)"
+            },
+            timeout=5
+        ).json()
+
+        # Process API requests data
+        api_data = []
+        if api_requests.get("status") == "success":
+            for result in api_requests.get("data", {}).get("result", []):
+                endpoint = result.get("metric", {}).get("endpoint", "unknown")
+                value = float(result.get("value", [0, "0"])[1])
+                api_data.append({"endpoint": endpoint, "requests": value})
+
+        # Process model duration data
+        model_data = []
+        if model_duration.get("status") == "success":
+            for result in model_duration.get("data", {}).get("result", []):
+                model_id = result.get("metric", {}).get("model_id", "unknown")
+                value = float(result.get("value", [0, "0"])[1])
+                model_data.append({"model_id": model_id, "avg_duration": value})
+
+        return {
+            "api_data": api_data,
+            "model_data": model_data
+        }
+    except Exception as e:
+        st.error(f"Failed to fetch metrics: {str(e)}")
+        return {"api_data": [], "model_data": []}
+
+# Add this to the main content area
+with col2:
+    st.header("📊 System Info")
+
+    # System metrics
+    st.metric("Active Models", len(models) if models else 0)
+    st.metric("Chat Messages", len(st.session_state.get("messages", [])))
+
+    # Add metrics dashboard
+    st.subheader("📈 Metrics Dashboard")
+
+    # Add refresh button
+    if st.button("🔄 Refresh Metrics"):
+        st.session_state.metrics = get_prometheus_metrics()
+
+    # Initialize metrics in session state if not present
+    if "metrics" not in st.session_state:
+        st.session_state.metrics = get_prometheus_metrics()
+
+    # Display API request metrics
+    if st.session_state.metrics["api_data"]:
+        st.write("API Requests by Endpoint")
+        api_df = pd.DataFrame(st.session_state.metrics["api_data"])
+        fig = go.Figure(data=[
+            go.Bar(
+                x=api_df["endpoint"],
+                y=api_df["requests"],
+                marker_color='indianred'
+            )
+        ])
+        fig.update_layout(height=300, margin=dict(l=20, r=20, t=30, b=20))
+        st.plotly_chart(fig, use_container_width=True)
+
+    # Display model inference metrics
+    if st.session_state.metrics["model_data"]:
+        st.write("Average Inference Duration by Model (seconds)")
+        model_df = pd.DataFrame(st.session_state.metrics["model_data"])
+        fig = go.Figure(data=[
+            go.Bar(
+                x=model_df["model_id"],
+                y=model_df["avg_duration"],
+                marker_color='lightseagreen'
+            )
+        ])
+        fig.update_layout(height=300, margin=dict(l=20, r=20, t=30, b=20))
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.subheader("🔗 Quick Links")
+    st.markdown("""
+    - [Prometheus](http://localhost:9090) - Metrics
+    - [Grafana](http://localhost:3000) - Dashboards
+    - [Qdrant](http://localhost:6333/dashboard) - Vector DB
+    - [Model API](http://localhost:8080) - Models
+    """)
+
+    st.subheader("📚 Documentation")
+    st.markdown("""
+    - [MCP Protocol](https://github.com/microsoft/mcp)
+    - [Model Runner](https://github.com/docker/model-runner)
+    - [Docker Compose](https://docs.docker.com/compose/)
+    """)
+```
+
+## 5. Create a Docker Compose File for Monitoring Services
+
+```yaml
+# File: /home/ofayese/docker-mcpai-stack/compose/docker-compose.monitoring.yml
+version: '3.8'
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: mcpai-prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    user: "65534:65534"  # nobody:nogroup
+    security_opt:
+      - no-new-privileges:true
+    profiles: ["monitoring", "dev"]
+
+  grafana:
+    image: grafana/grafana:10.2.0
+    container_name: mcpai-grafana
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ../grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ../grafana/datasources:/etc/grafana/provisioning/datasources
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    user: "472:472"  # grafana:grafana
+    security_opt:
+      - no-new-privileges:true
+    profiles: ["monitoring", "dev"]
+
+  loki:
+    image: grafana/loki:2.9.0
+    container_name: mcpai-loki
+    ports:
+      - "${LOKI_PORT:-3100}:3100"
+    volumes:
+      - loki_data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    healthcheck:
+      test: ["
+	Let me continue with the implementation plan for the monitoring components:
+
+```yaml
+# File: /home/ofayese/docker-mcpai-stack/compose/docker-compose.monitoring.yml
+  loki:
+    image: grafana/loki:2.9.0
+    container_name: mcpai-loki
+    ports:
+      - "${LOKI_PORT:-3100}:3100"
+    volumes:
+      - loki_data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3100/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    user: "10001:10001"  # non-root user
+    security_opt:
+      - no-new-privileges:true
+    profiles: ["monitoring", "dev"]
+
+volumes:
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  loki_data:
+    driver: local
+```
+
+## 6. Create Grafana Dashboard Configuration
+
+```yaml
+# File: /home/ofayese/docker-mcpai-stack/grafana/datasources/prometheus.yaml
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    orgId: 1
+    url: http://prometheus:9090
+    basicAuth: false
+    isDefault: true
+    editable: false
+```
+
+```yaml
+# File: /home/ofayese/docker-mcpai-stack/grafana/dashboards/dashboard.yaml
+apiVersion: 1
+
+providers:
+  - name: 'MCPAI Dashboards'
+    orgId: 1
+    folder: ''
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /etc/grafana/provisioning/dashboards
+```
+
+```json
+# File: /home/ofayese/docker-mcpai-stack/grafana/dashboards/mcpai-dashboard.json
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": 1,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 0.5,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "options": {
+        "legend": {
+          "calcs": ["mean", "max"],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "title": "API Request Rate",
+      "type": "timeseries",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "expr": "sum(rate(mcp_api_requests_total[5m])) by (endpoint)",
+          "legendFormat": "{{endpoint}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 0.5,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "id": 2,
+      "options": {
+        "legend": {
+          "calcs": ["mean", "max"],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "title": "API Request Duration",
+      "type": "timeseries",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "expr": "histogram_quantile(0.95, sum(rate(mcp_api_request_duration_seconds_bucket[5m])) by (le, endpoint))",
+          "legendFormat": "{{endpoint}} (p95)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 0.5,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "id": 3,
+      "options": {
+        "legend": {
+          "calcs": ["mean", "max"],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "title": "Model Inference Duration",
+      "type": "timeseries",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "expr": "histogram_quantile(0.95, sum(rate(mcp_model_inference_duration_seconds_bucket[5m])) by (le, model_id))",
+          "legendFormat": "{{model_id}} (p95)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 5
+              },
+              {
+                "color": "red",
+                "value": 10
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "id": 4,
+      "options": {
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
+      "title": "Active Requests",
+      "type": "gauge",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "expr": "mcp_api_active_requests",
+          "refId": "A"
+        }
+      ]
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["mcpai", "monitoring"],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "",
+  "title": "MCPAI Dashboard",
+  "uid": "mcpai-dashboard",
+  "version": 1,
+  "weekStart": ""
+}
+```
+
+## 7. Create a Chat Router with Metrics Integration
+
+Let me continue with the implementation of the chat router with metrics integration:
+
+```python
+# File: /home/ofayese/docker-mcpai-stack/services/mcp-api/src/routers/chat.py
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
+from typing import List, Dict, Any, Optional
+import httpx
+import time
+import uuid
+from ..core.config import settings
+from ..core.monitoring import model_inference_count, model_inference_duration
+
+router = APIRouter()
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+class ChatCompletionRequest(BaseModel):
+    model: str
+    messages: List[ChatMessage]
+    max_tokens: Optional[int] = 500
+    temperature: Optional[float] = 0.7
+    stream: Optional[bool] = False
+
+class ChatCompletionResponse(BaseModel):
+    id: str
+    object: str = "chat.completion"
+    created: int
+    model: str
+    choices: List[Dict[str, Any]]
+    usage: Dict[str, int]
+
+@router.post("/completions", response_model=ChatCompletionResponse)
+async def create_chat_completion(request: ChatCompletionRequest):
+    """
+    Create a chat completion with the specified model
+    """
+    start_time = time.time()
+    model_id = request.model
+
+    try:
+        # Forward request to model runner
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{settings.MODEL_API_URL}/chat/completions",
+                json=request.dict(),
+                timeout=60.0
+            )
+
+            # Record successful inference
+            model_inference_count.labels(
+                model_id=model_id,
+                status="success"
+            ).inc()
+
+            # Observe inference duration
+            model_inference_duration.labels(
+                model_id=model_id
+            ).observe(time.time() - start_time)
+
+            # Return response from model runner
+            return response.json()
+
+    except Exception as e:
+        # Record failed inference
+        model_inference_count.labels(
+            model_id=model_id,
+            status="error"
+        ).inc()
+
+        # Still observe the duration even if it failed
+        model_inference_duration.labels(
+            model_id=model_id
+        ).observe(time.time() - start_time)
+
+        # Raise HTTP exception
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error communicating with model runner: {str(e)}"
+        )
+```
+
+## 8. Update the UI to Send Chat Messages with Metrics
+
+```python
+# File: /home/ofayese/docker-mcpai-stack/services/ui/src/app.py
+def send_chat_message(message: str, model: str) -> str:
+    """Send a chat message to the API and get a response"""
+    try:
+        # Prepare the request payload
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": message}],
+            "max_tokens": max_tokens,
+            "temperature": temperature
+        }
+
+        # Add previous messages for context if available
+        if len(st.session_state.messages) > 1:
+            # Get the last 5 messages (or fewer if there aren't 5)
+            context_messages = st.session_state.messages[-5:]
+            payload["messages"] = [{"role": msg["role"], "content": msg["content"]} for msg in context_messages]
+            # Ensure the latest message is included
+            if payload["messages"][-1]["content"] != message:
+                payload["messages"].append({"role": "user", "content": message})
+
+        # Send the request to the API
+        response = requests.post(
+            f"{MCP_API_URL}/v1/chat/completions",
+            json=payload,
+            timeout=60
+        )
+
+        # Check if the request was successful
+        if response.status_code == 200:
+            data = response.json()
+            return data["choices"][0]["message"]["content"]
+        else:
+            return f"Error: Received status code {response.status_code} from API"
+    except Exception as e:
+        return f"Error: {str(e)}"
+```
+
+## 9. Create a Health Check Router
+
+```python
+# File: /home/ofayese/docker-mcpai-stack/services/mcp-api/src/routers/health.py
+from fastapi import APIRouter, Depends, Request
+import httpx
+from ..core.config import settings
+
+router = APIRouter()
+
+@router.get("")
+async def health_check():
+    """
+    Basic health check endpoint
+    """
+    return {"status": "healthy"}
+
+@router.get("/ready")
+async def readiness_check(request: Request):
+    """
+    Readiness check that verifies all dependencies are available
+    """
+    health_status = {
+        "status": "ready",
+        "services": {
+            "qdrant": False,
+            "model_runner": False
+        }
+    }
+
+    # Check Qdrant connection
+    try:
+        qdrant = request.app.state.qdrant
+        collections = qdrant.get_collections()
+        health_status["services"]["qdrant"] = True
+    except Exception:
+        health_status["status"] = "not_ready"
+
+    # Check Model Runner connection
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{settings.MODEL_API_URL}/health", timeout=5)
+        if response.status_code == 200:
+            health_status["services"]["model_runner"] = True
+        else:
+            health_status["status"] = "not_ready"
+    except Exception:
+        health_status["status"] = "not_ready"
+
+    return health_status
+
+@router.get("/live")
+async def liveness_check():
+    """
+    Liveness check that verifies the service is running
+    """
+    return {"status": "alive"}
+```
+
+## 10. Create a Models Router
+
+```python
+# File: /home/ofayese/docker-mcpai-stack/services/mcp-api/src/routers/models.py
+from fastapi import APIRouter, HTTPException
+import httpx
+from ..core.config import settings
+
+router = APIRouter()
+
+@router.get("")
+async def list_models():
+    """
+    List available models from the model runner
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{settings.MODEL_API_URL}/models", timeout=10)
+
+        if response.status_code == 200:
+            return response.json()
+        else:
+            raise HTTPException(
+                status_code=response.status_code,
+                detail=f"Error fetching models: {response.text}"
+            )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error communicating with model runner: {str(e)}"
+        )
+
+@router.get("/{model_id}")
+async def get_model(model_id: str):
+    """
+    Get information about a specific model
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{settings.MODEL_API_URL}/models/{model_id}", timeout=10)
+
+        if response.status_code == 200:
+            return response.json()
+        elif response.status_code == 404:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Model {model_id} not found"
+            )
+        else:
+            raise HTTPException(
+                status_code=response.status_code,
+                detail=f"Error fetching model: {response.text}"
+            )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error communicating with model runner: {str(e)}"
+        )
+```
+
+## 11. Create a Configuration Module
+
+```python
+# File: /home/ofayese/docker-mcpai-stack/services/mcp-api/src/core/config.py
+from pydantic import BaseSettings
+import os
+
+class Settings(BaseSettings):
+    """
+    Application settings
+    """
+    # API settings
+    VERSION: str = "0.1.0"
+    DEBUG: bool = os.getenv("DEBUG", "False").lower() == "true"
+    ENVIRONMENT: str = os.getenv("ENVIRONMENT", "production")
+
+    # Service URLs
+    QDRANT_URL: str = os.getenv("QDRANT_URL", "http://qdrant:6333")
+    MODEL_API_URL: str = os.getenv("MODEL_API_URL", "http://model-runner:8080/v1")
+
+    # Monitoring settings
+    PROMETHEUS_MULTIPROC_DIR: str = os.getenv("PROMETHEUS_MULTIPROC_DIR", "/tmp")
+
+    class Config:
+        env_file = ".env"
+
+settings = Settings()
+```
+
+## 12. Update the Docker Compose Base File
+
+```yaml
+# File: /home/ofayese/docker-mcpai-stack/compose/docker-compose.base.yml
+version: '3.8'
+
+x-common-env: &common-env
+  QDRANT_URL: http://qdrant:6333
+  MODEL_API_URL: http://model-runner:8080/v1
+  PROMETHEUS_MULTIPROC_DIR: /tmp
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-healthcheck: &default-healthcheck
+  interval: 30s
+  timeout: 10s
+  retries: 3
+  start_period: 40s
+
+services:
+  # Vector database
+  qdrant:
+    image: qdrant/qdrant:v1.9.0
+    container_name: mcpai-qdrant
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:6333/readyz"]
+      <<: *default-healthcheck
+    logging:
+      <<: *default-logging
+    restart: unless-stopped
+    profiles: ["cpu", "gpu", "dev"]
+
+  # Model runner
+  model-runner:
+    image: docker/model-runner:latest
+    container_name: mcpai-model-runner
+    ports:
+      - "${MODEL_RUNNER_PORT:-8080}:8080"
+    volumes:
+      - models:/models
+    environment:
+      - RUNNER_HTTP_ADDR=0.0.0.0:8080
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/metrics"]
+      <<: *default-healthcheck
+    logging:
+      <<: *default-logging
+    restart: unless-stopped
+    profiles: ["cpu", "dev"]
+
+  # MCP API
+  mcp-api:
+    build:
+      context: ../services/mcp-api
+    container_name: mcpai-api
+    ports:
+      - "${MCP_API_PORT:-4000}:4000"
+    environment:
+      <<: *common-env
+      DEBUG: "true"
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      model-runner:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
+      <<: *default-healthcheck
+    logging:
+      <<: *default-logging
+    restart: unless-stopped
+    profiles: ["cpu", "gpu", "dev"]
+
+  # UI
+  ui:
+    build:
+      context: ../services/ui
+    container_name: mcpai-ui
+    ports:
+      - "${UI_PORT:-8501}:8501"
+    environment:
+      - MODEL_API_URL=http://model-runner:8080/v1
+      - MCP_API_URL=http://mcp-api:4000
+    depends_on:
+      mcp-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/healthz"]
+      <<: *default-healthcheck
+    logging:
+      <<: *default-logging
+    restart: unless-stopped
+    profiles: ["cpu", "gpu", "dev"]
+
+Let me continue with the implementation plan:
+
+```yaml
+# File: /home/ofayese/docker-mcpai-stack/compose/docker-compose.base.yml (continued)
+volumes:
+  qdrant_data:
+    driver: local
+  models:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  loki_data:
+    driver: local
+
+networks:
+  default:
+    name: mcpai-stack
+    driver: bridge
+```
+
+## 13. Create a Makefile for Common Operations
+
+```makefile
+# File: /home/ofayese/docker-mcpai-stack/Makefile
+.PHONY: up down logs ps build rebuild clean test backup restore metrics
+
+# Default profile (cpu or gpu)
+PROFILE ?= cpu
+
+# Docker compose command with base file
+COMPOSE = docker compose -f compose/docker-compose.base.yml
+
+# Start the stack with the specified profile
+up:
+	$(COMPOSE) --profile $(PROFILE) up -d
+
+# Start the stack with monitoring
+up-monitoring:
+	$(COMPOSE) -f compose/docker-compose.monitoring.yml --profile $(PROFILE) --profile monitoring up -d
+
+# Start the stack in development mode
+dev:
+	$(COMPOSE) -f compose/docker-compose.dev.yml --profile dev up -d
+
+# Stop the stack
+down:
+	$(COMPOSE) down
+
+# View logs
+logs:
+	$(COMPOSE) logs -f
+
+# Show running containers
+ps:
+	$(COMPOSE) ps
+
+# Build all images
+build:
+	$(COMPOSE) build
+
+# Rebuild and restart services
+rebuild:
+	$(COMPOSE) --profile $(PROFILE) up -d --build
+
+# Clean up volumes and containers
+clean:
+	$(COMPOSE) down -v
+
+# Run tests
+test:
+	$(COMPOSE) -f compose/docker-compose.test.yml up -d
+	$(COMPOSE) exec mcp-api pytest
+	$(COMPOSE) -f compose/docker-compose.test.yml down
+
+# Backup data
+backup:
+	./scripts/backup.sh
+
+# Restore data
+restore:
+	./scripts/restore.sh
+
+# View metrics dashboard
+metrics:
+	@echo "Opening Grafana dashboard at http://localhost:3000"
+	@echo "Default credentials: admin/admin"
+	@xdg-open http://localhost:3000 || open http://localhost:3000 || echo "Please open http://localhost:3000 in your browser"
+```
+
+## 14. Create a Backup Script
+
+```bash
+#!/bin/bash
+# File: /home/ofayese/docker-mcpai-stack/scripts/backup.sh
+
+# Set backup directory
+BACKUP_DIR="../backups"
+TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+BACKUP_FILE="${BACKUP_DIR}/mcpai_backup_${TIMESTAMP}.tar.xz"
+
+# Create backup directory if it doesn't exist
+mkdir -p ${BACKUP_DIR}
+
+echo "Creating backup of MCPAI Stack data..."
+
+# Stop containers to ensure data consistency
+echo "Stopping containers..."
+docker compose -f compose/docker-compose.base.yml down
+
+# Create a temporary directory for the backup
+TEMP_DIR=$(mktemp -d)
+
+# Copy volume data to temporary directory
+echo "Copying volume data..."
+docker run --rm -v mcpai-stack_qdrant_data:/data -v ${TEMP_DIR}/qdrant:/backup alpine sh -c "cp -r /data/* /backup/"
+docker run --rm -v mcpai-stack_models:/data -v ${TEMP_DIR}/models:/backup alpine sh -c "cp -r /data/* /backup/"
+
+# Create compressed archive
+echo "Creating compressed archive..."
+tar -cJf ${BACKUP_FILE} -C ${TEMP_DIR} .
+
+# Clean up temporary directory
+rm -rf ${TEMP_DIR}
+
+# Restart containers
+echo "Restarting containers..."
+docker compose -f compose/docker-compose.base.yml --profile cpu up -d
+
+echo "Backup completed: ${BACKUP_FILE}"
+echo "Backup size: $(du -h ${BACKUP_FILE} | cut -f1)"
+```
+
+## 15. Create a Restore Script
+
+```bash
+#!/bin/bash
+# File: /home/ofayese/docker-mcpai-stack/scripts/restore.sh
+
+# Check if backup file is provided
+if [ -z "$1" ]; then
+    echo "Usage: $0 <backup_file>"
+    exit 1
+fi
+
+BACKUP_FILE=$1
+
+# Check if backup file exists
+if [ ! -f "$BACKUP_FILE" ]; then
+    echo "Backup file not found: $BACKUP_FILE"
+    exit 1
+fi
+
+echo "Restoring MCPAI Stack data from $BACKUP_FILE..."
+
+# Stop containers
+echo "Stopping containers..."
+docker compose -f compose/docker-compose.base.yml down
+
+# Create a temporary directory for the restore
+TEMP_DIR=$(mktemp -d)
+
+# Extract backup to temporary directory
+echo "Extracting backup..."
+tar -xJf ${BACKUP_FILE} -C ${TEMP_DIR}
+
+# Restore volume data
+echo "Restoring volume data..."
+docker run --rm -v mcpai-stack_qdrant_data:/data -v ${TEMP_DIR}/qdrant:/backup alpine sh -c "rm -rf /data/* && cp -r /backup/* /data/"
+docker run --rm -v mcpai-stack_models:/data -v ${TEMP_DIR}/models:/backup alpine sh -c "rm -rf /data/* && cp -r /backup/* /data/"
+
+# Clean up temporary directory
+rm -rf ${TEMP_DIR}
+
+# Restart containers
+echo "Restarting containers..."
+docker compose -f compose/docker-compose.base.yml --profile cpu up -d
+
+echo "Restore completed successfully!"
+```
+
+## 16. Create a README.md with Instructions
+
+```markdown
+# Docker MCPAI Stack
+
+A comprehensive stack for AI applications with monitoring and metrics.
+
+## Features
+
+- 🤖 Model serving with Docker Model Runner
+- 🔍 Vector database with Qdrant
+- 🚀 FastAPI backend for MCP (Model Context Protocol)
+- 📊 Streamlit UI for interaction
+- 📈 Prometheus and Grafana for monitoring
+- 🪵 Centralized logging with Loki
+
+## Quick Start
+
+### Prerequisites
+
+- Docker and Docker Compose
+- Make (optional, for using the Makefile commands)
+
+### Starting the Stack
+
+1. Clone this repository:
+   ```bash
+   git clone https://github.com/yourusername/docker-mcpai-stack.git
+   cd docker-mcpai-stack
+   ```
+
+2. Start the stack with CPU profile:
+   ```bash
+   make up
+   ```
+
+   Or with GPU support:
+   ```bash
+   make PROFILE=gpu up
+   ```
+
+3. Start with monitoring enabled:
+   ```bash
+   make up-monitoring
+   ```
+
+4. Access the UI at http://localhost:8501
+
+### Monitoring
+
+- Prometheus: http://localhost:9090
+- Grafana: http://localhost:3000 (default credentials: admin/admin)
+- Loki: http://localhost:3100
+
+### Backup and Restore
+
+To create a backup:
+```bash
+make backup
+```
+
+To restore from a backup:
+```bash
+./scripts/restore.sh backups/mcpai_backup_20230101_120000.tar.xz
+```
+
+## Architecture
+
+The stack consists of the following components:
+
+- **mcp-api**: FastAPI application serving as the API gateway
+- **model-runner**: Docker Model Runner for serving AI models
+- **qdrant**: Vector database for storing embeddings
+- **ui**: Streamlit UI for interacting with the stack
+- **prometheus**: Metrics collection and storage
+- **grafana**: Visualization of metrics
+- **loki**: Log aggregation
+
+## Development
+
+For development, use:
+
+```bash
+make dev
+```
+
+This starts the stack with development overrides, enabling hot-reloading and debug features.
+
+## Testing
+
+Run the test suite with:
+
+```bash
+make test
+```
+
+## License
+
+[MIT License](LICENSE)
+```
+
+## 17. Create a Development Docker Compose File
+
+```yaml
+# File: /home/ofayese/docker-mcpai-stack/compose/docker-compose.dev.yml
+version: '3.8'
+
+services:
+  mcp-api:
+    build:
+      context: ../services/mcp-api
+      target: development
+    volumes:
+      - ../services/mcp-api:/app
+    environment:
+      - DEBUG=true
+      - ENVIRONMENT=development
+    command: uvicorn src.main:app --host 0.0.0.0 --port 4000 --reload
+
+  ui:
+    build:
+      context: ../services/ui
+      target: development
+    volumes:
+      - ../services/ui:/app
+    command: streamlit run src/app.py --server.runOnSave=true
+
+  # Development tools
+  adminer:
+    image: adminer:latest
+    container_name: mcpai-adminer
+    ports:
+      - "8080:8080"
+    profiles: ["dev"]
+    restart: unless-stopped
+
+  # Qdrant dashboard is available at http://localhost:6333/dashboard
+```
+
+## 18. Create a Test Docker Compose File
+
+```yaml
+# File: /home/ofayese/docker-mcpai-stack/compose/docker-compose.test.yml
+version: '3.8'
+
+services:
+  mcp-api:
+    build:
+      context: ../services/mcp-api
+      target: test
+    environment:
+      - ENVIRONMENT=test
+      - QDRANT_URL=http://qdrant:6333
+      - MODEL_API_URL=http://mock-model-runner:8080/v1
+    command: pytest -xvs
+
+  # Mock model runner for testing
+  mock-model-runner:
+    build:
+      context: ../services/mock-model-runner
+    ports:
+      - "8080:8080"
+    environment:
+      - MOCK_LATENCY=0.1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+```
+
+## 19. Create a Mock Model Runner for Testing
+
+```python
+# File: /home/ofayese/docker-mcpai-stack/services/mock-model-runner/app.py
+from fastapi import FastAPI, Request
+import time
+import random
+import uuid
+from datetime import datetime
+
+app = FastAPI(title="Mock Model Runner")
+
+# Sample models
+MODELS = [
+    {
+        "id": "gpt-3.5-turbo",
+        "name": "GPT-3.5 Turbo",
+        "description": "Mock GPT-3.5 Turbo model for testing"
+    },
+    {
+        "id": "llama-7b",
+        "name": "Llama 7B",
+        "description": "Mock Llama 7B model for testing"
+    }
+]
+
+@app.get("/health")
+async def health():
+    return {"status": "healthy"}
+
+@app.get("/v1/models")
+async def list_models():
+    return {
+        "data": MODELS,
+        "object": "list"
+    }
+
+@app.get("/v1/models/{model_id}")
+async def get_model(model_id: str):
+    for model in MODELS:
+        if model["id"] == model_id:
+            return {
+                "data": model,
+                "object": "model"
+            }
+    return {"error": "Model not found"}, 404
+
+@app.post("/v1/chat/completions")
+async def chat_completions(request: Request):
+    # Parse request body
+    body = await request.json()
+
+    # Get model and messages
+    model_id = body.get("model", "gpt-3.5-turbo")
+    messages = body.get("messages", [])
+
+    # Simulate processing time
+    latency = float(app.state.config.get("MOCK_LATENCY", 0.5))
+    time.sleep(latency)
+
+    # Generate mock response
+    last_message = messages[-1]["content"] if messages else ""
+
+    # Simple response generation
+    response = f"This is a mock response to: {last_message}"
+
+    # Return formatted response
+    return {
+        "id": f"chatcmpl-{uuid.uuid4()}",
+        "object": "chat.completion",
+        "created": int(datetime.now().timestamp()),
+        "model": model_id,
+        "choices": [
+            {
+                "index": 0,
+Let me continue with the implementation plan:
+
+```python
+# File: /home/ofayese/docker-mcpai-stack/services/mock-model-runner/app.py (continued)
+                "message": {
+                    "role": "assistant",
+                    "content": response
+                },
+                "finish_reason": "stop"
+            }
+        ],
+        "usage": {
+            "prompt_tokens": len(last_message.split()),
+            "completion_tokens": len(response.split()),
+            "total_tokens": len(last_message.split()) + len(response.split())
+        }
+    }
+
+@app.get("/metrics")
+async def metrics():
+    """Mock metrics endpoint"""
+    return """
+# HELP model_runner_requests_total Total number of requests
+# TYPE model_runner_requests_total counter
+model_runner_requests_total{model="gpt-3.5-turbo"} 42
+model_runner_requests_total{model="llama-7b"} 21
+# HELP model_runner_request_duration_seconds Request duration in seconds
+# TYPE model_runner_request_duration_seconds histogram
+model_runner_request_duration_seconds_bucket{le="0.1",model="gpt-3.5-turbo"} 10
+model_runner_request_duration_seconds_bucket{le="0.5",model="gpt-3.5-turbo"} 25
+model_runner_request_duration_seconds_bucket{le="1.0",model="gpt-3.5-turbo"} 40
+model_runner_request_duration_seconds_bucket{le="+Inf",model="gpt-3.5-turbo"} 42
+model_runner_request_duration_seconds_count{model="gpt-3.5-turbo"} 42
+model_runner_request_duration_seconds_sum{model="gpt-3.5-turbo"} 21.5
+"""
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize app state with configuration"""
+    import os
+    app.state.config = {
+        "MOCK_LATENCY": os.getenv("MOCK_LATENCY", "0.5")
+    }
+    print(f"Mock Model Runner started with config: {app.state.config}")
+```
+
+## 20. Create a Dockerfile for the Mock Model Runner
+
+```dockerfile
+# File: /home/ofayese/docker-mcpai-stack/services/mock-model-runner/Dockerfile
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# Install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY app.py .
+
+# Run the application
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080"]
+```
+
+## 21. Create Requirements for the Mock Model Runner
+
+```
+# File: /home/ofayese/docker-mcpai-stack/services/mock-model-runner/requirements.txt
+fastapi==0.104.1
+uvicorn==0.24.0
+```
+
+## 22. Create a Dockerfile for the MCP API
+
+```dockerfile
+# File: /home/ofayese/docker-mcpai-stack/services/mcp-api/Dockerfile
+# Build stage for development
+FROM python:3.10-slim as development
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY . .
+
+# Expose port
+EXPOSE 4000
+
+# Command to run the application
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "4000"]
+
+# Build stage for testing
+FROM development as test
+
+# Install test dependencies
+RUN pip install --no-cache-dir pytest pytest-asyncio httpx
+
+# Build stage for production
+FROM python:3.10-slim as production
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY . .
+
+# Create non-root user
+RUN adduser --disabled-password --gecos "" appuser
+USER appuser
+
+# Expose port
+EXPOSE 4000
+
+# Command to run the application
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "4000"]
+```
+
+## 23. Create a Dockerfile for the UI
+
+```dockerfile
+# File: /home/ofayese/docker-mcpai-stack/services/ui/Dockerfile
+# Build stage for development
+FROM python:3.10-slim as development
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY . .
+
+# Expose port
+EXPOSE 8501
+
+# Command to run the application
+CMD ["streamlit", "run", "src/app.py", "--server.address", "0.0.0.0"]
+
+# Build stage for production
+FROM python:3.10-slim as production
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY . .
+
+# Create non-root user
+RUN adduser --disabled-password --gecos "" appuser
+USER appuser
+
+# Expose port
+EXPOSE 8501
+
+# Command to run the application
+CMD ["streamlit", "run", "src/app.py", "--server.address", "0.0.0.0"]
+```
+
+## 24. Create a Loki Configuration File
+
+```yaml
+# File: /home/ofayese/docker-mcpai-stack/loki/local-config.yaml
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+
+ingester:
+  lifecycler:
+    address: 127.0.0.1
+    ring:
+      kvstore:
+        store: inmemory
+      replication_factor: 1
+    final_sleep: 0s
+  chunk_idle_period: 5m
+  chunk_retain_period: 30s
+
+schema_config:
+  configs:
+    - from: 2020-10-24
+      store: boltdb-shipper
+      object_store: filesystem
+      schema: v11
+      index:
+        prefix: index_
+        period: 24h
+
+storage_config:
+  boltdb_shipper:
+    active_index_directory: /loki/index
+    cache_location: /loki/cache
+    cache_ttl: 24h
+    shared_store: filesystem
+  filesystem:
+    directory: /loki/chunks
+
+limits_config:
+  enforce_metric_name: false
+  reject_old_samples: true
+  reject_old_samples_max_age: 168h
+
+chunk_store_config:
+  max_look_back_period: 0s
+
+table_manager:
+  retention_deletes_enabled: false
+  retention_period: 0s
+
+compactor:
+  working_directory: /loki/compactor
+  shared_store: filesystem
+```
+
+## 25. Create a Docker Logging Configuration
+
+```yaml
+# File: /home/ofayese/docker-mcpai-stack/compose/docker-compose.logging.yml
+version: '3.8'
+
+x-logging: &loki-logging
+  driver: loki
+  options:
+    loki-url: "http://loki:3100/loki/api/v1/push"
+    loki-batch-size: "400"
+    loki-retries: "5"
+    loki-timeout: "5s"
+    max-size: "10m"
+    max-file: "3"
+    labels: "job,service,container_name"
+
+services:
+  # Override logging for all services
+  mcp-api:
+    logging: *loki-logging
+
+  model-runner:
+    logging: *loki-logging
+
+  qdrant:
+    logging: *loki-logging
+
+  ui:
+    logging: *loki-logging
+
+  # Add Loki service
+  loki:
+    image: grafana/loki:2.9.0
+    container_name: mcpai-loki
+    ports:
+      - "${LOKI_PORT:-3100}:3100"
+    volumes:
+      - ../loki/local-config.yaml:/etc/loki/local-config.yaml
+      - loki_data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3100/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    user: "10001:10001"  # non-root user
+    security_opt:
+      - no-new-privileges:true
+    profiles: ["logging", "dev"]
+
+volumes:
+  loki_data:
+    driver: local
+```
+
+## 26. Create a MCP Router for MCP-specific Endpoints
+
+```python
+# File: /home/ofayese/docker-mcpai-stack/services/mcp-api/src/routers/mcp.py
+from fastapi import APIRouter, HTTPException, Depends, Request
+from pydantic import BaseModel
+from typing import List, Dict, Any, Optional
+import httpx
+from ..core.config import settings
+
+router = APIRouter()
+
+class MCPRequest(BaseModel):
+    """Base class for MCP requests"""
+    model: str
+    context: Optional[Dict[str, Any]] = None
+
+class MCPResponse(BaseModel):
+    """Base class for MCP responses"""
+    model: str
+    result: Any
+
+@router.post("/process", response_model=MCPResponse)
+async def process_mcp_request(request: MCPRequest):
+    """
+    Process a Model Context Protocol request
+    """
+    try:
+        # Forward request to model runner
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{settings.MODEL_API_URL}/mcp/process",
+                json=request.dict(),
+                timeout=60.0
+            )
+
+            if response.status_code == 200:
+                return response.json()
+            else:
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"Error from model runner: {response.text}"
+                )
+    except httpx.HTTPError as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error communicating with model runner: {str(e)}"
+        )
+
+@router.get("/status")
+async def mcp_status():
+    """
+    Get MCP implementation status
+    """
+    return {
+        "status": "operational",
+        "version": "0.1.0",
+        "implementation": "docker-mcpai-stack",
+        "supported_models": ["gpt-3.5-turbo", "llama-7b"]
+    }
+```
+
+## 27. Create a GitHub Actions Workflow for CI
+
+```yaml
+# File: /home/ofayese/docker-mcpai-stack/.github/workflows/ci.yml
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+Let me continue with the GitHub Actions workflow and complete the implementation plan:
+
+```yaml
+# File: /home/ofayese/docker-mcpai-stack/.github/workflows/ci.yml (continued)
+      - name: Build and test
+        run: |
+          docker compose -f compose/docker-compose.test.yml build
+          docker compose -f compose/docker-compose.test.yml up --exit-code-from mcp-api
+
+      - name: Run linting
+        run: |
+          docker compose -f compose/docker-compose.test.yml run --rm mcp-api flake8 src/
+
+      - name: Security scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'docker-mcpai-stack_mcp-api:latest'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: 'CRITICAL,HIGH'
+
+  build:
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push MCP API
+        uses: docker/build-push-action@v4
+        with:
+          context: ./services/mcp-api
+          push: true
+          tags: ghcr.io/${{ github.repository }}/mcp-api:latest
+
+      - name: Build and push UI
+        uses: docker/build-push-action@v4
+        with:
+          context: ./services/ui
+          push: true
+          tags: ghcr.io/${{ github.repository }}/ui:latest
+```
+
+## 28. Create a GitHub Actions Workflow for Security Scanning
+
+```yaml
+# File: /home/ofayese/docker-mcpai-stack/.github/workflows/trivy-scan.yml
+name: Security Scan
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # Run daily at midnight
+  workflow_dispatch:  # Allow manual triggering
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Build images
+        run: |
+          docker compose -f compose/docker-compose.base.yml build
+
+      - name: Scan MCP API image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'docker-mcpai-stack_mcp-api:latest'
+          format: 'sarif'
+          output: 'trivy-results-mcp-api.sarif'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+
+      - name: Scan UI image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'docker-mcpai-stack_ui:latest'
+          format: 'sarif'
+          output: 'trivy-results-ui.sarif'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+
+      - name: Upload scan results
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-results-*.sarif'
+```
+
+## 29. Create a GitHub Actions Workflow for SBOM Generation
+
+```yaml
+# File: /home/ofayese/docker-mcpai-stack/.github/workflows/sbom.yml
+name: Generate SBOM
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  sbom:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Build images
+        run: |
+          docker compose -f compose/docker-compose.base.yml build
+
+      - name: Install Syft
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Generate SBOM for MCP API
+        run: |
+          syft docker-mcpai-stack_mcp-api:latest -o cyclonedx-json > mcp-api-sbom.json
+
+      - name: Generate SBOM for UI
+        run: |
+          syft docker-mcpai-stack_ui:latest -o cyclonedx-json > ui-sbom.json
+
+      - name: Upload SBOM artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: sbom-files
+          path: |
+            mcp-api-sbom.json
+            ui-sbom.json
+```
+
+## 30. Create VSCode Configuration Files
+
+```json
+# File: /home/ofayese/docker-mcpai-stack/.vscode/extensions.json
+{
+  "recommendations": [
+    "ms-python.python",
+    "ms-python.vscode-pylance",
+    "ms-azuretools.vscode-docker",
+    "ms-vscode-remote.remote-containers",
+    "redhat.vscode-yaml",
+    "streetsidesoftware.code-spell-checker",
+    "eamodio.gitlens",
+    "github.vscode-github-actions"
+  ]
+}
+```
+
+```json
+# File: /home/ofayese/docker-mcpai-stack/.vscode/settings.json
+{
+  "python.linting.enabled": true,
+  "python.linting.flake8Enabled": true,
+  "python.linting.pylintEnabled": false,
+  "python.formatting.provider": "black",
+  "python.formatting.blackArgs": [
+    "--line-length",
+    "88"
+  ],
+  "editor.formatOnSave": true,
+  "editor.codeActionsOnSave": {
+    "source.organizeImports": true
+  },
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/.pytest_cache": true,
+    "**/*.egg-info": true
+  },
+  "yaml.schemas": {
+    "https://raw.githubusercontent.com/compose-spec/compose-spec/master/schema/compose-spec.json": [
+      "compose/*.yml"
+    ]
+  }
+}
+```
+
+```json
+# File: /home/ofayese/docker-mcpai-stack/.vscode/launch.json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "MCP API: Debug",
+      "type": "python",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": [
+        "src.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "4000",
+        "--reload"
+      ],
+      "cwd": "${workspaceFolder}/services/mcp-api",
+      "justMyCode": false,
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/services/mcp-api",
+        "DEBUG": "true",
+        "ENVIRONMENT": "development"
+      }
+    },
+    {
+      "name": "UI: Debug",
+      "type": "python",
+      "request": "launch",
+      "module": "streamlit",
+      "args": [
+        "run",
+        "src/app.py",
+        "--server.runOnSave=true"
+      ],
+      "cwd": "${workspaceFolder}/services/ui",
+      "justMyCode": false,
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/services/ui",
+        "MODEL_API_URL": "http://localhost:8080/v1",
+        "MCP_API_URL": "http://localhost:4000"
+      }
+    }
+  ]
+}
+```
+
+## 31. Create a Dev Container Configuration
+
+```json
+# File: /home/ofayese/docker-mcpai-stack/.devcontainer/devcontainer.json
+{
+  "name": "MCPAI Stack Development",
+  "dockerComposeFile": [
+    "../compose/docker-compose.base.yml",
+    "../compose/docker-compose.dev.yml"
+  ],
+  "service": "mcp-api",
+  "workspaceFolder": "/app",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-azuretools.vscode-docker",
+        "redhat.vscode-yaml",
+        "streetsidesoftware.code-spell-checker",
+        "eamodio.gitlens",
+        "github.vscode-github-actions"
+      ],
+      "settings": {
+        "python.linting.enabled": true,
+        "python.linting.flake8Enabled": true,
+        "python.formatting.provider": "black",
+        "editor.formatOnSave": true
+      }
+    }
+  },
+  "forwardPorts": [4000, 8501, 8080, 6333, 9090, 3000],
+  "postCreateCommand": "pip install -r requirements.txt",
+  "remoteUser": "root",
+  "features": {
+    "ghcr.io/devcontainers/features/python:1": {
+      "version": "3.10"
+    },
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  }
+}
+```
+
+## 32. Create a .gitignore File
+
+```
+# File: /home/ofayese/docker-mcpai-stack/.gitignore
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+venv/
+ENV/
+env/
+
+# IDE
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/tasks.json
+*.swp
+*.swo
+
+# Docker
+.docker/
+
+# Logs
+logs/
+*.log
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Backups
+backups/*
+!backups/.gitkeep
+
+# Temporary files
+.tmp/
+tmp/
+```
+
+## 33. Create an Environment Example File
+
+```
+# File: /home/ofayese/docker-mcpai-stack/.env.example
+# API settings
+MCP_API_PORT=4000
+MODEL_RUNNER_PORT=8080
+UI_PORT=8501
+QDRANT_PORT=6333
+
+# Monitoring settings
+PROMETHEUS_PORT=9090
+GRAFANA_PORT=3000
+LOKI_PORT=3100
+
+# Environment
+ENVIRONMENT=development
+DEBUG=true
+
+# Service URLs
+QDRANT_URL=http://qdrant:6333
+MODEL_API_URL=http://model-runner:8080/v1
+```
+
+Let me complete the implementation plan with the remaining components:
+
+## 34. Create a Prometheus Configuration File
+
+```yaml
+# File: /home/ofayese/docker-mcpai-stack/prometheus/prometheus.yml
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'mcp-api'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['mcp-api:4000']
+    scrape_interval: 5s
+
+  - job_name: 'model-runner'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['model-runner:8080']
+    scrape_interval: 5s
+
+  - job_name: 'qdrant'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['qdrant:6333']
+    scrape_interval: 10s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          # - alertmanager:9093
+
+rule_files:
+  # - "first_rules.yml"
+  # - "second_rules.yml"
+```
+
+## 35. Create a Monitoring Docker Compose File
+
+```yaml
+# File: /home/ofayese/docker-mcpai-stack/compose/docker-compose.monitoring.yml
+version: '3.8'
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: mcpai-prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    user: "65534:65534"  # nobody:nobody
+    security_opt:
+      - no-new-privileges:true
+    profiles: ["monitoring", "dev"]
+
+  grafana:
+    image: grafana/grafana:10.2.0
+    container_name: mcpai-grafana
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ../grafana/datasources:/etc/grafana/provisioning/datasources
+      - ../grafana/dashboards:/etc/grafana/provisioning/dashboards
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+    depends_on:
+      - prometheus
+      - loki
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    user: "472:472"  # grafana:grafana
+    security_opt:
+      - no-new-privileges:true
+    profiles: ["monitoring", "dev"]
+
+  loki:
+    image: grafana/loki:2.9.0
+    container_name: mcpai-loki
+    ports:
+      - "${LOKI_PORT:-3100}:3100"
+    volumes:
+      - ../loki/local-config.yaml:/etc/loki/local-config.yaml
+      - loki_data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3100/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    user: "10001:10001"  # non-root user
+    security_opt:
+      - no-new-privileges:true
+    profiles: ["monitoring", "dev"]
+
+volumes:
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  loki_data:
+    driver: local
+```
+
+## 36. Create a Loki Datasource for Grafana
+
+```yaml
+# File: /home/ofayese/docker-mcpai-stack/grafana/datasources/loki.yaml
+apiVersion: 1
+
+datasources:
+  - name: Loki
+    type: loki
+    access: proxy
+    orgId: 1
+    url: http://loki:3100
+    basicAuth: false
+    isDefault: false
+    editable: false
+```
+
+## 37. Create a Logging Dashboard for Grafana
+
+```json
+# File: /home/ofayese/docker-mcpai-stack/grafana/dashboards/logging-dashboard.json
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": 2,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "P8E80F9AEF21F6940"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": false
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "P8E80F9AEF21F6940"
+          },
+          "editorMode": "builder",
+          "expr": "{container_name=~\"mcpai-.*\"}",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "All Logs",
+      "type": "logs"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "P8E80F9AEF21F6940"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "id": 2,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": false
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "P8E80F9AEF21F6940"
+          },
+          "editorMode": "builder",
+          "expr": "{container_name=\"mcpai-api\"}",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "MCP API Logs",
+      "type": "logs"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "P8E80F9AEF21F6940"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "id": 3,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": false
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "P8E80F9AEF21F6940"
+          },
+          "editorMode": "builder",
+          "expr": "{container_name=\"mcpai-model-runner\"}",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "Model Runner Logs",
+      "type": "logs"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "P8E80F9AEF21F6940"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "id": 4,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": false
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "P8E80F9AEF21F6940"
+          },
+          "editorMode": "builder",
+          "expr": "{container_name=\"mcpai-ui\"}",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "UI Logs",
+      "type": "logs"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "P8E80F9AEF21F6940"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "id": 5,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": false
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "P8E80F9AEF21F6940"
+          },
+          "editorMode": "builder",
+          "expr": "{container_name=\"mcpai-qdrant\"}",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "Qdrant Logs",
+      "type": "logs"
+    }
+  ],
+Let me complete the logging dashboard and finish the implementation plan:
+
+```json
+# File: /home/ofayese/docker-mcpai-stack/grafana/dashboards/logging-dashboard.json (continued)
+  "refresh": "10s",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["logs", "mcpai"],
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "loki",
+          "uid": "P8E80F9AEF21F6940"
+        },
+        "definition": "label_values(container_name)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Container",
+        "multi": false,
+        "name": "container",
+        "options": [],
+        "query": "label_values(container_name)",
+        "refresh": 1,
+        "regex": "/mcpai-.*/",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "",
+  "title": "MCPAI Logs",
+  "uid": "mcpai-logs",
+  "version": 1,
+  "weekStart": ""
+}
+```
+
+## 38. Create a Core Monitoring Module
+
+```python
+# File: /home/ofayese/docker-mcpai-stack/services/mcp-api/src/core/monitoring.py
+from prometheus_client import Counter, Histogram, Gauge, Info, multiprocess, CollectorRegistry
+import os
+import time
+
+# Create registry
+registry = CollectorRegistry()
+
+# Request metrics
+request_count = Counter(
+    'mcp_api_requests_total',
+    'Total number of requests processed',
+    ['method', 'endpoint', 'status_code'],
+    registry=registry
+)
+
+request_duration = Histogram(
+    'mcp_api_request_duration_seconds',
+    'Request duration in seconds',
+    ['method', 'endpoint'],
+    buckets=[0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
+    registry=registry
+)
+
+# Model metrics
+model_inference_count = Counter(
+    'mcp_model_inferences_total',
+    'Total number of model inferences',
+    ['model_id', 'status'],
+    registry=registry
+)
+
+model_inference_duration = Histogram(
+    'mcp_model_inference_duration_seconds',
+    'Model inference duration in seconds',
+    ['model_id'],
+    buckets=[0.1, 0.5, 1, 2, 5, 10, 30, 60, 120],
+    registry=registry
+)
+
+# System metrics
+system_info = Info(
+    'mcp_api_info',
+    'Information about the MCP API',
+    ['version', 'environment'],
+    registry=registry
+)
+
+active_connections = Gauge(
+    'mcp_api_active_connections',
+    'Number of active connections',
+    registry=registry
+)
+
+# Qdrant metrics
+qdrant_request_count = Counter(
+    'mcp_qdrant_requests_total',
+    'Total number of requests to Qdrant',
+    ['operation', 'status'],
+    registry=registry
+)
+
+qdrant_request_duration = Histogram(
+    'mcp_qdrant_request_duration_seconds',
+    'Qdrant request duration in seconds',
+    ['operation'],
+    buckets=[0.01, 0.05, 0.1, 0.5, 1, 2.5, 5],
+    registry=registry
+)
+
+def setup_metrics():
+    """Initialize metrics for multiprocess mode"""
+    # Set up multiprocess mode if needed
+    if 'PROMETHEUS_MULTIPROC_DIR' in os.environ:
+        multiprocess.MultiProcessCollector(registry)
+
+    # Set system info
+    from ..core.config import settings
+    system_info.labels(
+        version=settings.VERSION,
+        environment=settings.ENVIRONMENT
+    ).info({'start_time': str(time.time())})
+
+class QdrantMetrics:
+    """Context manager for tracking Qdrant operations"""
+
+    def __init__(self, operation):
+        self.operation = operation
+        self.start_time = None
+
+    def __enter__(self):
+        self.start_time = time.time()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        duration = time.time() - self.start_time
+        qdrant_request_duration.labels(operation=self.operation).observe(duration)
+
+        if exc_type is not None:
+            # There was an exception
+            qdrant_request_count.labels(
+                operation=self.operation,
+                status="error"
+            ).inc()
+        else:
+            # No exception
+            qdrant_request_count.labels(
+                operation=self.operation,
+                status="success"
+            ).inc()
+```
+
+## 39. Create a Middleware for Request Monitoring
+
+```python
+# File: /home/ofayese/docker-mcpai-stack/services/mcp-api/src/core/middleware.py
+from fastapi import Request, Response
+import time
+from .monitoring import request_count, request_duration, active_connections
+import structlog
+
+logger = structlog.get_logger()
+
+async def monitoring_middleware(request: Request, call_next):
+    """Middleware for monitoring requests"""
+    # Increment active connections
+    active_connections.inc()
+
+    # Record start time
+    start_time = time.time()
+
+    # Get request path and method
+    path = request.url.path
+    method = request.method
+
+    # Process request
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+
+        # Log request
+        logger.info(
+            "Request processed",
+            method=method,
+            path=path,
+            status_code=status_code,
+            duration=time.time() - start_time
+        )
+
+    except Exception as e:
+        # Log exception
+        logger.exception(
+            "Request failed",
+            method=method,
+            path=path,
+            error=str(e)
+        )
+
+        # Return error response
+        status_code = 500
+        response = Response(
+            content={"detail": "Internal server error"},
+            status_code=status_code
+        )
+    finally:
+        # Record metrics
+        request_count.labels(
+            method=method,
+            endpoint=path,
+            status_code=status_code
+        ).inc()
+
+        request_duration.labels(
+            method=method,
+            endpoint=path
+        ).observe(time.time() - start_time)
+
+        # Decrement active connections
+        active_connections.dec()
+
+    return response
+```
+
+## 40. Update the Main Application to Use the Middleware
+
+```python
+# File: /home/ofayese/docker-mcpai-stack/services/mcp-api/src/main.py
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, Response
+from contextlib import asynccontextmanager
+import structlog
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+
+from .core.config import settings
+from .core.monitoring import setup_metrics
+from .core.middleware import monitoring_middleware
+from .routers import chat, models, health, mcp
+
+# Configure structured logging
+structlog.configure(
+    processors=[
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.JSONRenderer()
+    ]
+)
+
+logger = structlog.get_logger()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan events"""
+    logger.info("Starting MCP API Gateway", version=settings.VERSION)
+
+    # Initialize metrics
+    setup_metrics()
+
+    # Initialize connections
+    # Set up Qdrant client for vector store
+    try:
+        from qdrant_client import QdrantClient
+        app.state.qdrant = QdrantClient(url=settings.QDRANT_URL)
+        logger.info("Initialized Qdrant client", url=settings.QDRANT_URL)
+    except Exception as e:
+        logger.error("Failed to initialize Qdrant client", error=str(e))
+        raise
+
+    # Check Model Runner health
+    try:
+        import httpx
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{settings.MODEL_API_URL}/health", timeout=5)
+        if resp.status_code != 200:
+            raise RuntimeError(f"Model runner unhealthy: {resp.status_code}")
+        logger.info("Model runner is healthy")
+    except Exception as e:
+        logger.error("Model runner health check failed", error=str(e))
+        raise
+
+    yield
+
+    logger.info("Shutting down MCP API Gateway")
+
+# Create FastAPI app
+app = FastAPI(
+    title="MCP API Gateway",
+    description="Unified API for Model Context Protocol services",
+    version=settings.VERSION,
+    lifespan=lifespan
+)
+
+# CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Add monitoring middleware
+app.middleware("http")(monitoring_middleware)
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Global exception handler"""
+    logger.exception(
+        "Unhandled exception",
+        path=request.url.path,
+        method=request.method,
+        error=str(exc)
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"}
+    )
+
+# Include routers
+app.include_router(health.router, prefix="/health", tags=["health"])
+app.include_router(models.router, prefix="/v1/models", tags=["models"])
+app.include_router(chat.router, prefix="/v1/chat", tags=["chat"])
+app.include_router(mcp.router, prefix="/mcp", tags=["mcp"])
+
+@app.get("/metrics")
+async def metrics():
+    """Expose Prometheus metrics"""
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+@app.get("/")
+async def root():
+    """Root endpoint"""
+    return {
+        "name": "MCP API Gateway",
+        "version": settings.VERSION,
+        "status": "running"
+    }
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(
+        "src.main:app",
+        host="0.0.0.0",
+        port=4000,
+        reload=settings.DEBUG
+    )
+```
+
+## 41. Update the UI to Display Metrics
+
+```python
+# File: /home/ofayese/docker-mcpai-stack/services/ui/src/app.py
+import streamlit as st
+import os
+import requests
+import pandas as pd
+import plotly.express as px
+import time
+
+"""
+Streamlit UI for Docker MCP Stack
+Modern interface for interacting with LLMs and MCP services
+"""
+
+# Configuration
+MODEL_API_URL = os.getenv("MODEL_API_URL", "http://model-runner:8080/v1")
+MCP_API_URL = os.getenv("MCP_API_URL", "http://mcp-api:4000")
+PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://prometheus:9090")
+
+st.set_page_config(
+    page_title="Docker MCP Stack",
+    page_icon="🤖",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Custom CSS
+Let me complete the UI implementation with metrics display:
+
+```python
+# File: /home/ofayese/docker-mcpai-stack/services/ui/src/app.py (continued)
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 2.5rem;
+        font-weight: bold;
+        color: #1f77b4;
+        text-align: center;
+        margin-bottom: 2rem;
+    }
+    .chat-message {
+        padding: 1rem;
+        margin: 0.5rem 0;
+        border-radius: 0.5rem;
+        border-left: 4px solid #1f77b4;
+        background-color: #f8f9fa;
+    }
+    .status-healthy {
+        color: #28a745;
+        font-weight: bold;
+    }
+    .status-unhealthy {
+        color: #dc3545;
+        font-weight: bold;
+    }
+    .metric-card {
+        padding: 1rem;
+        border-radius: 0.5rem;
+        background-color: #f8f9fa;
+        box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
+        margin-bottom: 1rem;
+    }
+    .metric-value {
+        font-size: 2rem;
+        font-weight: bold;
+        color: #1f77b4;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+def check_service_health(url: str, service_name: str) -> bool:
+    """Check if a service is healthy"""
+    try:
+        response = requests.get(f"{url}/health", timeout=2)
+        return response.status_code == 200
+    except:
+        return False
+
+def get_available_models() -> list:
+    """Get list of available models"""
+    try:
+        response = requests.get(f"{MODEL_API_URL}/models", timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("data", [])
+    except:
+        pass
+    return []
+
+def send_chat_message(message: str, model: str, max_tokens: int = 500, temperature: float = 0.7) -> str:
+    """Send a chat message to the API and get a response"""
+    try:
+        # Prepare the request payload
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": message}],
+            "max_tokens": max_tokens,
+            "temperature": temperature
+        }
+
+        # Add previous messages for context if available
+        if len(st.session_state.messages) > 1:
+            # Get the last 5 messages (or fewer if there aren't 5)
+            context_messages = st.session_state.messages[-5:]
+            payload["messages"] = [{"role": msg["role"], "content": msg["content"]} for msg in context_messages]
+            # Ensure the latest message is included
+            if payload["messages"][-1]["content"] != message:
+                payload["messages"].append({"role": "user", "content": message})
+
+        # Send the request to the API
+        response = requests.post(
+            f"{MCP_API_URL}/v1/chat/completions",
+            json=payload,
+            timeout=60
+        )
+
+        # Check if the request was successful
+        if response.status_code == 200:
+            data = response.json()
+            return data["choices"][0]["message"]["content"]
+        else:
+            return f"Error: Received status code {response.status_code} from API"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+def get_metrics_data():
+    """Get metrics data from Prometheus"""
+    try:
+        # Get request count
+        response = requests.get(
+            f"{PROMETHEUS_URL}/api/v1/query",
+            params={"query": "sum(mcp_api_requests_total)"},
+            timeout=5
+        )
+        if response.status_code == 200:
+            data = response.json()
+            request_count = int(data["data"]["result"][0]["value"][1]) if data["data"]["result"] else 0
+        else:
+            request_count = 0
+
+        # Get model inference count
+        response = requests.get(
+            f"{PROMETHEUS_URL}/api/v1/query",
+            params={"query": "sum(mcp_model_inferences_total)"},
+            timeout=5
+        )
+        if response.status_code == 200:
+            data = response.json()
+            inference_count = int(data["data"]["result"][0]["value"][1]) if data["data"]["result"] else 0
+        else:
+            inference_count = 0
+
+        # Get average request duration
+        response = requests.get(
+            f"{PROMETHEUS_URL}/api/v1/query",
+            params={"query": "avg(rate(mcp_api_request_duration_seconds_sum[5m]) / rate(mcp_api_request_duration_seconds_count[5m]))"},
+            timeout=5
+        )
+        if response.status_code == 200:
+            data = response.json()
+            avg_duration = float(data["data"]["result"][0]["value"][1]) if data["data"]["result"] else 0
+        else:
+            avg_duration = 0
+
+        # Get model performance by model
+        response = requests.get(
+            f"{PROMETHEUS_URL}/api/v1/query",
+            params={"query": "sum by (model_id) (mcp_model_inferences_total)"},
+            timeout=5
+        )
+        if response.status_code == 200:
+            data = response.json()
+            model_data = []
+            for result in data["data"]["result"]:
+                model_data.append({
+                    "model": result["metric"]["model_id"],
+                    "count": int(result["value"][1])
+                })
+        else:
+            model_data = []
+
+        return {
+            "request_count": request_count,
+            "inference_count": inference_count,
+            "avg_duration": avg_duration,
+            "model_data": model_data
+        }
+    except Exception as e:
+        st.error(f"Error fetching metrics: {str(e)}")
+        return {
+            "request_count": 0,
+            "inference_count": 0,
+            "avg_duration": 0,
+            "model_data": []
+        }
+
+# Initialize session state
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+# Main header
+st.markdown('<div class="main-header">🤖 Docker MCP Stack</div>', unsafe_allow_html=True)
+
+# Sidebar
+with st.sidebar:
+    st.header("Services Status")
+
+    # Check MCP API health
+    mcp_api_healthy = check_service_health(MCP_API_URL, "MCP API")
+    if mcp_api_healthy:
+        st.markdown('<span class="status-healthy">✅ MCP API: Healthy</span>', unsafe_allow_html=True)
+    else:
+        st.markdown('<span class="status-unhealthy">❌ MCP API: Unhealthy</span>', unsafe_allow_html=True)
+
+    # Check Model Runner health
+    model_runner_healthy = check_service_health(MODEL_API_URL, "Model Runner")
+    if model_runner_healthy:
+        st.markdown('<span class="status-healthy">✅ Model Runner: Healthy</span>', unsafe_allow_html=True)
+    else:
+        st.markdown('<span class="status-unhealthy">❌ Model Runner: Unhealthy</span>', unsafe_allow_html=True)
+
+    # Available models
+    st.header("Available Models")
+    models = get_available_models()
+    if models:
+        model_options = [model["id"] for model in models]
+        selected_model = st.selectbox("Select a model", model_options)
+    else:
+        st.error("No models available")
+        selected_model = None
+
+    # Model parameters
+    st.header("Parameters")
+    max_tokens = st.slider("Max Tokens", 50, 2000, 500)
+    temperature = st.slider("Temperature", 0.0, 1.0, 0.7)
+
+    # Links to monitoring
+    st.header("Monitoring")
+    st.markdown("[📊 Grafana Dashboard](http://localhost:3000)")
+    st.markdown("[📈 Prometheus](http://localhost:9090)")
+
+    # Refresh metrics button
+    if st.button("Refresh Metrics"):
+        st.rerun()
+
+# Main content area
+tab1, tab2 = st.tabs(["Chat", "Metrics"])
+
+with tab1:
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        # Display chat messages
+        for message in st.session_state.messages:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+
+        # Chat input
+        if prompt := st.chat_input("Type your message here..."):
+            if not selected_model:
+                st.error("Please select a model first")
+            else:
+                # Add user message to chat history
+                st.session_state.messages.append({"role": "user", "content": prompt})
+
+                # Display user message
+                with st.chat_message("user"):
+                    st.markdown(prompt)
+
+                # Get response from API
+                with st.chat_message("assistant"):
+                    with st.spinner("Thinking..."):
+                        response = send_chat_message(prompt, selected_model, max_tokens, temperature)
+                        st.markdown(response)
+
+                # Add assistant response to chat history
+                st.session_state.messages.append({"role": "assistant", "content": response})
+
+    with col2:
+        # Model information
+        if selected_model:
+            for model in models:
+                if model["id"] == selected_model:
+                    st.subheader("Model Information")
+                    st.write(f"**Name:** {model.get('name', model['id'])}")
+                    st.write(f"**Description:** {model.get('description', 'No description available')}")
+                    break
+
+with tab2:
+    # Metrics dashboard
+    st.header("System Metrics")
+
+    # Get metrics data
+    metrics_data = get_metrics_data()
+
+    # Display metrics in cards
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+        st.markdown("### Total Requests")
+        st.markdown(f'<div class="metric-value">{metrics_data["request_count"]}</div>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    with col2:
+        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+        st.markdown("### Total Inferences")
+        st.markdown(f'<div class="metric-value">{metrics_data["inference_count"]}</div>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    with col3:
+        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+        st.markdown("### Avg Response Time")
+        st.markdown(f'<div class="metric-value">{metrics_data["avg_duration"]:.2f}s</div>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    # Model usage chart
+    if metrics_data["model_data"]:
+        st.subheader("Model Usage")
+        df = pd.DataFrame(metrics_data["model_data"])
+        fig = px.bar(df, x="model", y="count", title="Inferences by Model")
+        st.plotly_chart(fig, use_container_width=True)
+
+    # Add refresh button
+    if st.button("Refresh"):
+        st.rerun()
+
+# Footer
+st.markdown("---")
+Let me complete the UI implementation and finish the implementation plan:
+
+```python
+# File: /home/ofayese/docker-mcpai-stack/services/ui/src/app.py (continued)
+st.markdown(
+    "Docker MCPAI Stack | [GitHub](https://github.com/yourusername/docker-mcpai-stack) | [Documentation](https://github.com/yourusername/docker-mcpai-stack/docs)"
+)
+```
+
+## 42. Create a Chat Router Implementation
+
+```python
+# File: /home/ofayese/docker-mcpai-stack/services/mcp-api/src/routers/chat.py
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, Field
+from typing import List, Dict, Any, Optional
+import httpx
+import time
+from ..core.config import settings
+from ..core.monitoring import model_inference_count, model_inference_duration
+import structlog
+
+logger = structlog.get_logger()
+
+router = APIRouter()
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+class ChatCompletionRequest(BaseModel):
+    model: str
+    messages: List[ChatMessage]
+    max_tokens: Optional[int] = Field(default=500, ge=1, le=4096)
+    temperature: Optional[float] = Field(default=0.7, ge=0.0, le=2.0)
+    stream: Optional[bool] = False
+
+class ChatCompletionChoice(BaseModel):
+    index: int
+    message: ChatMessage
+    finish_reason: str
+
+class ChatCompletionUsage(BaseModel):
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+class ChatCompletionResponse(BaseModel):
+    id: str
+    object: str
+    created: int
+    model: str
+    choices: List[ChatCompletionChoice]
+    usage: ChatCompletionUsage
+
+@router.post("/completions", response_model=ChatCompletionResponse)
+async def create_chat_completion(request: Request, chat_request: ChatCompletionRequest):
+    """
+    Create a chat completion
+    This endpoint forwards the request to the model runner
+    """
+    model_id = chat_request.model
+    start_time = time.time()
+
+    try:
+        # Forward request to model runner
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{settings.MODEL_API_URL}/chat/completions",
+                json=chat_request.dict(),
+                timeout=60.0
+            )
+
+            # Record metrics
+            duration = time.time() - start_time
+            model_inference_duration.labels(model_id=model_id).observe(duration)
+
+            if response.status_code == 200:
+                model_inference_count.labels(model_id=model_id, status="success").inc()
+                return response.json()
+            else:
+                model_inference_count.labels(model_id=model_id, status="error").inc()
+                logger.error(
+                    "Model runner error",
+                    model=model_id,
+                    status_code=response.status_code,
+                    response=response.text
+                )
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"Error from model runner: {response.text}"
+                )
+    except httpx.HTTPError as e:
+        model_inference_count.labels(model_id=model_id, status="error").inc()
+        logger.exception(
+            "HTTP error during model inference",
+            model=model_id,
+            error=str(e)
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error communicating with model runner: {str(e)}"
+        )
+    except Exception as e:
+        model_inference_count.labels(model_id=model_id, status="error").inc()
+        logger.exception(
+            "Unexpected error during model inference",
+            model=model_id,
+            error=str(e)
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unexpected error: {str(e)}"
+        )
+```
+
+## 43. Create a Models Router Implementation
+
+```python
+# File: /home/ofayese/docker-mcpai-stack/services/mcp-api/src/routers/models.py
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+from typing import List, Dict, Any, Optional
+import httpx
+from ..core.config import settings
+import structlog
+
+logger = structlog.get_logger()
+
+router = APIRouter()
+
+class ModelData(BaseModel):
+    id: str
+    name: Optional[str] = None
+    description: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+class ModelsResponse(BaseModel):
+    data: List[ModelData]
+
+@router.get("", response_model=ModelsResponse)
+async def list_models():
+    """
+    List available models
+    This endpoint forwards the request to the model runner
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{settings.MODEL_API_URL}/models",
+                timeout=10.0
+            )
+
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logger.error(
+                    "Model runner error when listing models",
+                    status_code=response.status_code,
+                    response=response.text
+                )
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"Error from model runner: {response.text}"
+                )
+    except httpx.HTTPError as e:
+        logger.exception(
+            "HTTP error when listing models",
+            error=str(e)
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error communicating with model runner: {str(e)}"
+        )
+
+@router.get("/{model_id}", response_model=ModelData)
+async def get_model(model_id: str):
+    """
+    Get model details
+    This endpoint forwards the request to the model runner
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{settings.MODEL_API_URL}/models/{model_id}",
+                timeout=10.0
+            )
+
+            if response.status_code == 200:
+                return response.json()
+            elif response.status_code == 404:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Model {model_id} not found"
+                )
+            else:
+                logger.error(
+                    "Model runner error when getting model details",
+                    model=model_id,
+                    status_code=response.status_code,
+                    response=response.text
+                )
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"Error from model runner: {response.text}"
+                )
+    except httpx.HTTPError as e:
+        logger.exception(
+            "HTTP error when getting model details",
+            model=model_id,
+            error=str(e)
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error communicating with model runner: {str(e)}"
+        )
+```
+
+## 44. Create a Health Router Implementation
+
+```python
+# File: /home/ofayese/docker-mcpai-stack/services/mcp-api/src/routers/health.py
+from fastapi import APIRouter, Request, HTTPException
+import httpx
+from ..core.config import settings
+import structlog
+
+logger = structlog.get_logger()
+
+router = APIRouter()
+
+@router.get("")
+async def health_check(request: Request):
+    """
+    Health check endpoint
+    Checks the health of the API and its dependencies
+    """
+    health_status = {
+        "status": "healthy",
+        "version": settings.VERSION,
+        "dependencies": {
+            "model_runner": "unknown",
+            "qdrant": "unknown"
+        }
+    }
+
+    # Check Model Runner health
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{settings.MODEL_API_URL}/health",
+                timeout=5.0
+            )
+            health_status["dependencies"]["model_runner"] = (
+                "healthy" if response.status_code == 200 else "unhealthy"
+            )
+    except Exception as e:
+        logger.warning("Model runner health check failed", error=str(e))
+        health_status["dependencies"]["model_runner"] = "unhealthy"
+
+    # Check Qdrant health
+    try:
+        qdrant = request.app.state.qdrant
+        telemetry = qdrant.get_telemetry()
+        health_status["dependencies"]["qdrant"] = "healthy"
+    except Exception as e:
+        logger.warning("Qdrant health check failed", error=str(e))
+        health_status["dependencies"]["qdrant"] = "unhealthy"
+
+    # Overall status
+    if any(status == "unhealthy" for status in health_status["dependencies"].values()):
+        health_status["status"] = "degraded"
+        return health_status
+
+    return health_status
+
+@router.get("/ready")
+async def readiness_check(request: Request):
+    """
+    Readiness check endpoint
+    Checks if the API is ready to serve requests
+    """
+    try:
+        # Check Model Runner health
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{settings.MODEL_API_URL}/health",
+                timeout=5.0
+            )
+            if response.status_code != 200:
+                raise HTTPException(status_code=503, detail="Model runner is not ready")
+
+        # Check Qdrant health
+        qdrant = request.app.state.qdrant
+        telemetry = qdrant.get_telemetry()
+
+        return {"status": "ready"}
+    except Exception as e:
+        logger.warning("Readiness check failed", error=str(e))
+        raise HTTPException(status_code=503, detail="Service is not ready")
+
+@router.get("/live")
+async def liveness_check():
+    """
+    Liveness check endpoint
+    Checks if the API is alive
+    """
+    return {"status": "alive"}
+```
+
+## 45. Create a Configuration Module
+
+```python
+# File: /home/ofayese/docker-mcpai-stack/services/mcp-api/src/core/config.py
+from pydantic_settings import BaseSettings
+import os
+
+class Settings(BaseSettings):
+    """Application settings"""
+    # API settings
+    VERSION: str = "0.1.0"
+    DEBUG: bool = os.getenv("DEBUG", "false").lower() == "true"
+    ENVIRONMENT: str = os.getenv("ENVIRONMENT", "production")
+
+    # Service URLs
+    QDRANT_URL: str = os.getenv("QDRANT_URL", "http://qdrant:6333")
+    MODEL_API_URL: str = os.getenv("MODEL_API_URL", "http://model-runner:8080/v1")
+
+    # Monitoring settings
+    PROMETHEUS_MULTIPROC_DIR: str = os.getenv("PROMETHEUS_MULTIPROC_DIR", "")
+
+    class Config:
+        env_file = ".env"
+
+# Create settings instance
+settings = Settings()
+```
+
+## 46. Create a README.md with Complete Documentation
+
+```markdown
+# Docker MCPAI Stack
+
+A comprehensive stack for AI applications with monitoring and metrics.
+
+## Features
+
+- 🤖 Model serving with Docker Model Runner
+- 🔍 Vector database with Qdrant
+- 🚀 FastAPI backend for MCP (Model Context Protocol)
+- 📊 Streamlit UI for interaction
+- 📈 Prometheus and Grafana for monitoring
+- 📝 Loki for centralized logging
+
+## Quick Start
+
+### Prerequisites
+
+- Docker and Docker Compose
+- Git
+
+### Installation
+
+1. Clone the repository:
+
+```bash
+git clone https://github.com/yourusername/docker-mcpai-stack.git
+cd docker-mcpai-stack
+```
+
+2. Start the stack:
+
+```bash
+make up
+```
+
+3. Access the UI at http://localhost:8501
+
+### Using with GPU
+
+Let me complete the README.md and finish the implementation plan:
+
+```markdown
+# File: /home/ofayese/docker-mcpai-stack/README.md (continued)
+
+### Using with GPU
+
+To use GPU acceleration:
+
+```bash
+make up PROFILE=gpu
+```
+
+## Architecture
+
+The Docker MCPAI Stack consists of the following components:
+
+- **MCP API**: FastAPI service that provides a unified API for model interactions
+- **Model Runner**: Service that handles model inference
+- **Qdrant**: Vector database for storing and querying embeddings
+- **UI**: Streamlit-based user interface
+- **Prometheus**: Metrics collection and storage
+- **Grafana**: Visualization of metrics and dashboards
+- **Loki**: Centralized logging system
+
+## Monitoring and Metrics
+
+The stack includes comprehensive monitoring with:
+
+- **Prometheus metrics** for all services
+- **Grafana dashboards** for visualization
+- **Loki** for centralized logging
+
+### Available Metrics
+
+- **API Metrics**:
+  - Request count by endpoint
+  - Request duration
+  - Error rates
+
+- **Model Metrics**:
+  - Inference count by model
+  - Inference duration
+  - Token usage
+
+- **System Metrics**:
+  - CPU and memory usage
+  - Container health
+
+### Accessing Monitoring
+
+- Prometheus: http://localhost:9090
+- Grafana: http://localhost:3000 (default credentials: admin/admin)
+- Loki: Integrated with Grafana
+
+## Development
+
+### Local Development
+
+For local development, you can use the development profile:
+
+```bash
+make up PROFILE=dev
+```
+
+### Using Dev Containers
+
+This project supports VS Code Dev Containers. To use:
+
+1. Install the Remote - Containers extension in VS Code
+2. Open the project folder in VS Code
+3. Click "Reopen in Container" when prompted
+
+### Running Tests
+
+```bash
+make test
+```
+
+## Backup and Recovery
+
+### Creating a Backup
+
+```bash
+make backup
+```
+
+Backups are stored in the `backups` directory.
+
+### Restoring from Backup
+
+```bash
+make restore BACKUP_FILE=backups/full/backup-20231101.tar.gz
+```
+
+## Configuration
+
+Configuration is managed through environment variables. Copy `.env.example` to `.env` and adjust as needed:
+
+```bash
+cp .env.example .env
+```
+
+## Security
+
+The stack implements several security best practices:
+
+- Non-root container users
+- Limited container capabilities
+- Regular security scanning with Trivy
+- SBOM generation
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+```
+
+## 47. Create a Makefile for Common Operations
+
+```makefile
+# File: /home/ofayese/docker-mcpai-stack/Makefile
+.PHONY: up down logs ps build rebuild clean test backup restore metrics
+
+# Default profile (cpu or gpu)
+PROFILE ?= cpu
+
+# Docker compose command with base file
+COMPOSE = docker compose -f compose/docker-compose.base.yml
+
+# Start the stack with the specified profile
+up:
+	$(COMPOSE) --profile $(PROFILE) up -d
+
+# Start the stack with monitoring
+up-monitoring:
+	$(COMPOSE) -f compose/docker-compose.monitoring.yml --profile $(PROFILE) --profile monitoring up -d
+
+# Start the stack with logging
+up-logging:
+	$(COMPOSE) -f compose/docker-compose.logging.yml --profile $(PROFILE) --profile logging up -d
+
+# Start the stack with all features
+up-all:
+	$(COMPOSE) -f compose/docker-compose.monitoring.yml -f compose/docker-compose.logging.yml --profile $(PROFILE) --profile monitoring --profile logging up -d
+
+# Stop the stack
+down:
+	$(COMPOSE) -f compose/docker-compose.monitoring.yml -f compose/docker-compose.logging.yml down
+
+# View logs
+logs:
+	$(COMPOSE) logs -f
+
+# View logs for a specific service
+logs-%:
+	$(COMPOSE) logs -f $*
+
+# Show running containers
+ps:
+	$(COMPOSE) ps
+
+# Build all images
+build:
+	$(COMPOSE) build
+
+# Rebuild a specific service
+rebuild-%:
+	$(COMPOSE) build --no-cache $*
+
+# Clean up unused resources
+clean:
+	docker system prune -f
+
+# Run tests
+test:
+	docker compose -f compose/docker-compose.test.yml up --exit-code-from mcp-api
+
+# Create a backup
+backup:
+	mkdir -p backups/full
+	docker run --rm \
+		-v $(PWD)/backups/full:/backup \
+		-v qdrant_data:/data \
+		alpine tar czf /backup/backup-$$(date +%Y%m%d).tar.gz -C /data .
+
+# Restore from a backup
+restore:
+	@if [ -z "$(BACKUP_FILE)" ]; then \
+		echo "Please specify BACKUP_FILE"; \
+		exit 1; \
+	fi
+	docker run --rm \
+		-v $(PWD)/$(BACKUP_FILE):/backup.tar.gz \
+		-v qdrant_data:/data \
+		alpine sh -c "rm -rf /data/* && tar xzf /backup.tar.gz -C /data"
+
+# View metrics
+metrics:
+	@echo "Prometheus: http://localhost:9090"
+	@echo "Grafana: http://localhost:3000"
+
+# Generate SBOM
+sbom:
+	@mkdir -p sbom
+	@echo "Generating SBOM for MCP API..."
+	docker run --rm \
+		-v /var/run/docker.sock:/var/run/docker.sock \
+		-v $(PWD)/sbom:/sbom \
+		anchore/syft docker-mcpai-stack_mcp-api:latest -o cyclonedx-json > sbom/mcp-api-sbom.json
+	@echo "Generating SBOM for UI..."
+	docker run --rm \
+		-v /var/run/docker.sock:/var/run/docker.sock \
+		-v $(PWD)/sbom:/sbom \
+		anchore/syft docker-mcpai-stack_ui:latest -o cyclonedx-json > sbom/ui-sbom.json
+	@echo "SBOMs generated in sbom directory"
+
+# Security scan
+scan:
+	@echo "Scanning MCP API image..."
+	docker run --rm \
+		-v /var/run/docker.sock:/var/run/docker.sock \
+		aquasec/trivy image docker-mcpai-stack_mcp-api:latest
+	@echo "Scanning UI image..."
+	docker run --rm \
+		-v /var/run/docker.sock:/var/run/docker.sock \
+		aquasec/trivy image docker-mcpai-stack_ui:latest
+``
+
+Let me complete the implementation plan with the final components:
+
+## 48. Create a Loki Configuration File
+
+```yaml
+# File: /home/ofayese/docker-mcpai-stack/loki/local-config.yaml
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+
+common:
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    instance_addr: 127.0.0.1
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2020-10-24
+      store: boltdb-shipper
+      object_store: filesystem
+      schema: v11
+      index:
+        prefix: index_
+        period: 24h
+
+ruler:
+  alertmanager_url: http://localhost:9093
+
+limits_config:
+  retention_period: 72h
+  enforce_metric_name: false
+  reject_old_samples: true
+  reject_old_samples_max_age: 168h
+
+analytics:
+  reporting_enabled: false
+```
+
+## 49. Create a Prometheus Datasource for Grafana
+
+```yaml
+# File: /home/ofayese/docker-mcpai-stack/grafana/datasources/prometheus.yaml
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    orgId: 1
+    url: http://prometheus:9090
+    basicAuth: false
+    isDefault: true
+    editable: false
+```
+
+## 50. Create a System Monitoring Dashboard for Grafana
+
+```json
+# File: /home/ofayese/docker-mcpai-stack/grafana/dashboards/system-dashboard.json
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": 1,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(mcp_api_requests_total[5m])) by (endpoint)",
+          "legendFormat": "{{endpoint}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "API Request Rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "id": 2,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum(rate(mcp_api_request_duration_seconds_bucket[5m])) by (le, endpoint))",
+          "legendFormat": "{{endpoint}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "API Request Duration (p95)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "id": 3,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(mcp_model_inferences_total[5m])) by (model_id)",
+          "legendFormat": "{{model_id}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Model Inference Rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+Let me complete the system monitoring dashboard and finish the implementation plan:
+
+```json
+# File: /home/ofayese/docker-mcpai-stack/grafana/dashboards/system-dashboard.json (continued)
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "id": 4,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum(rate(mcp_model_inference_duration_seconds_bucket[5m])) by (le, model_id))",
+          "legendFormat": "{{model_id}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Model Inference Duration (p95)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "id": 5,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "9.5.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "editorMode": "code",
+          "expr": "sum(mcp_api_active_connections)",
+          "legendFormat": "__auto",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Active Connections",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "id": 6,
+      "options": {
+        "displayLabels": [
+          "percent"
+        ],
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "pieType": "pie",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "9.5.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "editorMode": "code",
+          "expr": "sum(mcp_model_inferences_total) by (model_id)",
+          "legendFormat": "{{model_id}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Model Usage Distribution",
+      "type": "piechart"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 24
+      },
+      "id": 7,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(mcp_qdrant_requests_total[5m])) by (operation)",
+          "legendFormat": "{{operation}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Qdrant Operation Rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 24
+      },
+      "id": 8,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum(rate(mcp_qdrant_request_duration_seconds_bucket[5m])) by (le, operation))",
+          "legendFormat": "{{operation}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Qdrant Operation Duration (p95)",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["system", "mcpai"],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "",
+  "title": "MCPAI System Metrics",
+  "uid": "mcpai-system",
+  "version": 1,
+  "weekStart": ""
+}
+```
+
+## 51. Create a Dashboard Provider Configuration for Grafana
+
+```yaml
+# File: /home/ofayese/docker-mcpai-stack/grafana/dashboards/dashboard.yaml
+apiVersion: 1
+
+providers:
+  - name: 'MCPAI Dashboards'
+    orgId: 1
+    folder: 'MCPAI'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: true
+```
+
+## 52. Create a Docker Compose File for Testing
+
+```yaml
+# File: /home/ofayese/docker-mcpai-stack/compose/docker-compose.test.yml
+version: '3.8'
+
+services:
+  mcp-api:
+    build:
+      context: ../services/mcp-api
+      dockerfile: Dockerfile
+    image: docker-mcpai-stack_mcp-api:test
+    environment:
+      - DEBUG=true
+      - ENVIRONMENT=test
+      - QDRANT_URL=http://qdrant:6333
+      - MODEL_API_URL=http://model-runner:8080/v1
+    depends_on:
+      - qdrant
+      - model-runner
+Let me complete the test Docker Compose file and add the final components:
+
+```yaml
+# File: /home/ofayese/docker-mcpai-stack/compose/docker-compose.test.yml (continued)
+    command: >
+      sh -c "
+        pytest -xvs src/tests/ &&
+        flake8 src/ --count --select=E9,F63,F7,F82 --show-source --statistics
+      "
+
+  model-runner:
+    build:
+      context: ../services/model-runner
+      dockerfile: Dockerfile
+    image: docker-mcpai-stack_model-runner:test
+    environment:
+      - DEBUG=true
+      - ENVIRONMENT=test
+    volumes:
+      - ../services/model-runner/config:/app/config
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    environment:
+      - QDRANT_ALLOW_RECOVERY_MODE=true
+    volumes:
+      - qdrant_test_data:/qdrant/storage
+
+volumes:
+  qdrant_test_data:
+```
+
+## 53. Create a Loki Datasource for Grafana
+
+```yaml
+# File: /home/ofayese/docker-mcpai-stack/grafana/datasources/loki.yaml
+apiVersion: 1
+
+datasources:
+  - name: Loki
+    type: loki
+    access: proxy
+    orgId: 1
+    url: http://loki:3100
+    basicAuth: false
+    isDefault: false
+    editable: false
+```
+
+## 54. Create a Docker Compose File for Logging
+
+```yaml
+# File: /home/ofayese/docker-mcpai-stack/compose/docker-compose.logging.yml
+version: '3.8'
+
+services:
+  loki:
+    image: grafana/loki:2.8.2
+    profiles: ["logging"]
+    ports:
+      - "3100:3100"
+    volumes:
+      - ../loki:/etc/loki
+      - loki_data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    networks:
+      - mcpai-network
+
+  promtail:
+    image: grafana/promtail:2.8.2
+    profiles: ["logging"]
+    volumes:
+      - /var/log:/var/log
+      - ../promtail:/etc/promtail
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      - loki
+    networks:
+      - mcpai-network
+
+volumes:
+  loki_data:
+
+networks:
+  mcpai-network:
+    external: true
+```
+
+## 55. Create a Promtail Configuration File
+
+```yaml
+# File: /home/ofayese/docker-mcpai-stack/promtail/config.yml
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+        filters:
+          - name: label
+            values: ["com.docker.compose.project=docker-mcpai-stack"]
+    relabel_configs:
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/(.*)'
+        target_label: 'container_name'
+      - source_labels: ['__meta_docker_container_log_stream']
+        target_label: 'log_stream'
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
+        target_label: 'service'
+
+  - job_name: system
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: varlogs
+          __path__: /var/log/*log
+```
+
+## 56. Create a .env.example File
+
+```
+# File: /home/ofayese/docker-mcpai-stack/.env.example
+# API Settings
+DEBUG=false
+ENVIRONMENT=production
+VERSION=0.1.0
+
+# Service URLs
+QDRANT_URL=http://qdrant:6333
+MODEL_API_URL=http://model-runner:8080/v1
+
+# Monitoring Settings
+PROMETHEUS_MULTIPROC_DIR=/tmp/prometheus_multiproc
+
+# Model Runner Settings
+MODEL_PATH=/models
+MODEL_CONFIG_PATH=/app/config/config.yaml
+
+# UI Settings
+MCP_API_URL=http://mcp-api:4000
+MODEL_API_URL=http://model-runner:8080/v1
+PROMETHEUS_URL=http://prometheus:9090
+```
+
+## 57. Create a .dockerignore File
+
+```
+# File: /home/ofayese/docker-mcpai-stack/.dockerignore
+**/__pycache__
+**/.pytest_cache
+**/.coverage
+**/htmlcov
+**/.env
+**/.venv
+**/venv
+**/env
+**/.git
+**/.github
+**/.gitignore
+**/Dockerfile
+**/docker-compose*.yml
+**/README.md
+**/LICENSE
+**/backups
+```
+
+## 58. Create a .gitignore File
+
+```
+# File: /home/ofayese/docker-mcpai-stack/.gitignore
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual Environment
+.env
+.venv
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.swp
+*.swo
+
+# Docker
+.docker/
+
+# Logs
+logs/
+*.log
+
+# Backups
+backups/
+
+# Prometheus
+prometheus_data/
+
+# Grafana
+grafana_data/
+
+# Loki
+loki_data/
+
+# Qdrant
+qdrant_data/
+```
+
+## Final Implementation Summary
+
+This comprehensive implementation plan provides a complete monitoring and metrics system for the Docker MCPAI Stack. The implementation includes:
+
+### Core Components:
+1. **Docker Compose Files**: Base, development, GPU, monitoring, and logging configurations
+2. **Service Dockerfiles**: For MCP API, Model Runner, UI, and other services
+3. **Monitoring Infrastructure**: Prometheus, Grafana, and Loki for metrics and logging
+4. **API Implementation**: FastAPI with middleware for metrics collection
+5. **UI Implementation**: Streamlit interface with metrics display
+
+### Key Features:
+1. **Comprehensive Metrics**: API requests, model inferences, database operations, and system metrics
+2. **Visualization**: Grafana dashboards for system metrics and logs
+3. **Centralized Logging**: Loki and Promtail for log aggregation
+4. **Health Monitoring**: Health check endpoints and service status display
+5. **Development Tools**: Testing, linting, and CI/CD integration
+
+### Benefits:
+1. **Observability**: Complete visibility into system performance and behavior
+2. **Troubleshooting**: Quick identification of issues through metrics and logs
+3. **Performance Optimization**: Data-driven optimization based on metrics
+4. **Scalability**: Monitoring infrastructure that scales with the application
+5. **Security**: Monitoring for potential security issues and anomalies
+
+This implementation provides a solid foundation for a production-ready AI application stack with comprehensive monitoring and observability features. The modular design allows for easy extension and customization to meet specific requirements.

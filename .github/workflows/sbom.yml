@@ -1,36 +1,95 @@
 name: Generate SBOM
 
 on:
-  release:
-    types: [published]
-  workflow_dispatch:
+    push:
+        branches: [main]
+    release:
+        types: [published]
+    workflow_dispatch:
 
 jobs:
-  generate-sbom:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+    generate-sbom:
+        runs-on: ubuntu-latest
+        strategy:
+            matrix:
+                service: [mcp-api, ui, mock-model-runner]
 
-      - name: Build images
-        run: docker compose build
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
 
-      - name: Generate SBOM
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: 'mcpai-model-runner'
-          format: 'cyclonedx'
-          output: 'sbom.json'
-          scan-type: 'fs'
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@v3
 
-      - name: Upload SBOM as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: sbom
-          path: sbom.json
+            - name: Build ${{ matrix.service }} image
+              run: |
+                  docker compose -f compose/docker-compose.base.yml build ${{ matrix.service }}
 
-      - name: Attach SBOM to Release
-        if: github.event_name == 'release'
-        uses: softprops/action-gh-release@v1
-        with:
-          files: sbom.json
+            - name: Install Syft
+              run: |
+                  curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+
+            - name: Generate SBOM for ${{ matrix.service }} (CycloneDX)
+              run: |
+                  syft docker-mcpai-stack_${{ matrix.service }}:latest -o cyclonedx-json > ${{ matrix.service }}-sbom-cyclonedx.json
+
+            - name: Generate SBOM for ${{ matrix.service }} (SPDX)
+              run: |
+                  syft docker-mcpai-stack_${{ matrix.service }}:latest -o spdx-json > ${{ matrix.service }}-sbom-spdx.json
+
+            - name: Generate SBOM for ${{ matrix.service }} (Table)
+              run: |
+                  syft docker-mcpai-stack_${{ matrix.service }}:latest -o table > ${{ matrix.service }}-sbom-table.txt
+
+            - name: Upload SBOM artifacts
+              uses: actions/upload-artifact@v4
+              with:
+                  name: ${{ matrix.service }}-sbom
+                  path: |
+                      ${{ matrix.service }}-sbom-*.json
+                      ${{ matrix.service }}-sbom-*.txt
+
+            - name: Attach SBOMs to Release
+              if: github.event_name == 'release'
+              uses: softprops/action-gh-release@v1
+              with:
+                  files: |
+                      ${{ matrix.service }}-sbom-cyclonedx.json
+                      ${{ matrix.service }}-sbom-spdx.json
+                      ${{ matrix.service }}-sbom-table.txt
+
+    generate-combined-sbom:
+        runs-on: ubuntu-latest
+        needs: generate-sbom
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Download all SBOM artifacts
+              uses: actions/download-artifact@v4
+              with:
+                  path: sboms/
+
+            - name: Create combined SBOM manifest
+              run: |
+                  echo "# Software Bill of Materials (SBOM)" > combined-sbom-manifest.md
+                  echo "Generated on: $(date -u)" >> combined-sbom-manifest.md
+                  echo "Repository: ${{ github.repository }}" >> combined-sbom-manifest.md
+                  echo "Commit: ${{ github.sha }}" >> combined-sbom-manifest.md
+                  echo "" >> combined-sbom-manifest.md
+                  echo "## Services" >> combined-sbom-manifest.md
+                  for service in mcp-api ui mock-model-runner; do
+                    echo "- ${service}: ${service}-sbom-cyclonedx.json" >> combined-sbom-manifest.md
+                  done
+
+            - name: Upload combined SBOM manifest
+              uses: actions/upload-artifact@v4
+              with:
+                  name: combined-sbom-manifest
+                  path: combined-sbom-manifest.md
+
+            - name: Attach combined manifest to Release
+              if: github.event_name == 'release'
+              uses: softprops/action-gh-release@v1
+              with:
+                  files: combined-sbom-manifest.md

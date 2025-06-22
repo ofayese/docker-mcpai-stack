@@ -1,0 +1,25 @@
+# Dockerfile for E2E testing
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy test requirements
+COPY requirements-test.txt .
+RUN pip install -r requirements-test.txt
+
+# Copy tests
+COPY tests/ tests/
+COPY pytest.ini .
+
+# Set environment variables
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+
+# Default command
+CMD ["pytest", "tests/e2e/", "-v"]

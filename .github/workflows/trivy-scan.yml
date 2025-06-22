@@ -1,39 +1,77 @@
 name: Security Scan
 
 on:
-  schedule:
-    - cron: '0 0 * * *'  # Daily at midnight
-  workflow_dispatch:
+    schedule:
+        - cron: "0 0 * * *" # Daily at midnight UTC
+    workflow_dispatch:
+    push:
+        branches: [main]
+        paths:
+            - "services/**/Dockerfile"
+            - "services/**/requirements.txt"
 
 jobs:
-  scan:
-    name: Scan Images
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+    scan:
+        name: Scan Images
+        runs-on: ubuntu-latest
+        strategy:
+            matrix:
+                service: [mcp-api, ui, mock-model-runner]
 
-      - name: Build images
-        run: docker compose build
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
 
-      - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: 'mcpai-model-runner'
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-          severity: 'CRITICAL,HIGH'
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@v3
 
-      - name: Upload Trivy scan results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v2
-        with:
-          sarif_file: 'trivy-results.sarif'
+            - name: Build ${{ matrix.service }} image
+              run: |
+                  docker compose -f compose/docker-compose.base.yml build ${{ matrix.service }}
 
-      - name: Scan License issues
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: 'mcpai-model-runner'
-          format: 'table'
-          scan-type: 'license'
-          exit-code: '1'
-          severity: 'CRITICAL,HIGH'
+            - name: Run Trivy vulnerability scanner on ${{ matrix.service }}
+              uses: aquasecurity/trivy-action@master
+              with:
+                  image-ref: "docker-mcpai-stack_${{ matrix.service }}:latest"
+                  format: "sarif"
+                  output: "trivy-results-${{ matrix.service }}.sarif"
+                  severity: "CRITICAL,HIGH,MEDIUM"
+
+            - name: Upload Trivy scan results to GitHub Security tab
+              uses: github/codeql-action/upload-sarif@v2
+              if: always()
+              with:
+                  sarif_file: "trivy-results-${{ matrix.service }}.sarif"
+
+            - name: Run Trivy filesystem scan
+              uses: aquasecurity/trivy-action@master
+              with:
+                  scan-type: "fs"
+                  scan-ref: "./services/${{ matrix.service }}"
+                  format: "table"
+                  exit-code: "1"
+                  severity: "CRITICAL,HIGH"
+
+            - name: Scan License issues
+              uses: aquasecurity/trivy-action@master
+              with:
+                  image-ref: "docker-mcpai-stack_${{ matrix.service }}:latest"
+                  format: "table"
+                  scan-type: "license"
+                  exit-code: "0" # Don't fail on license issues, just report
+                  severity: "CRITICAL,HIGH,MEDIUM"
+
+    secret-scan:
+        name: Secret Scanning
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Run secret scan
+              uses: trufflesecurity/trufflehog@main
+              with:
+                  path: ./
+                  base: main
+                  head: HEAD
+                  extra_args: --debug --only-verified

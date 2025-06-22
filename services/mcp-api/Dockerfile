@@ -1,6 +1,6 @@
 # MCP API Gateway
 # FastAPI-based service for MCP protocol handling
-FROM python:3.12-slim AS build
+FROM python:3.12-slim AS base
 
 WORKDIR /app
 
@@ -14,19 +14,46 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Runtime stage
-FROM python:3.12-slim AS runtime
+# Development stage
+FROM base AS development
+
+# Install development dependencies
+RUN pip install --no-cache-dir pytest pytest-asyncio httpx black ruff
+
+# Copy application code
+COPY src/ ./src/
+
+# Enable hot reload and debugging
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV DEBUG=true
+
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "4000", "--reload"]
+
+# Test stage
+FROM development AS test
+
+# Copy test files
+COPY tests/ ./tests/
+
+# Set test environment
+ENV ENVIRONMENT=test
+
+CMD ["pytest", "-xvs"]
+
+# Production stage
+FROM python:3.12-slim AS production
 
 WORKDIR /app
 
-# Install runtime dependencies
+# Install runtime dependencies only
 RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy installed packages from build stage
-COPY --from=build /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
-COPY --from=build /usr/local/bin /usr/local/bin
+# Copy installed packages from base stage
+COPY --from=base /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=base /usr/local/bin /usr/local/bin
 
 # Copy application code
 COPY src/ ./src/
@@ -34,9 +61,10 @@ COPY src/ ./src/
 # Create data directory
 RUN mkdir -p /data
 
-# Set environment variables
+# Set production environment variables
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
+ENV ENVIRONMENT=production
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \

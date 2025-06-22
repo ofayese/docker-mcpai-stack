@@ -1,0 +1,182 @@
+version: "3.8"
+
+networks:
+    test-network:
+        driver: bridge
+
+volumes:
+    test-qdrant-data:
+    test-coverage:
+
+services:
+    # Unit tests
+    mcp-api-unit-tests:
+        build:
+            context: ../services/mcp-api
+            target: test
+        environment:
+            - ENVIRONMENT=test
+            - PYTEST_ARGS=tests/unit/ -v --cov=src --cov-report=xml
+        command: >
+            sh -c "
+              pip install -r requirements-test.txt &&
+              pytest tests/unit/ -v --cov=src --cov-report=xml --cov-report=html
+            "
+        volumes:
+            - test-coverage:/app/coverage
+        networks:
+            - test-network
+        profiles: ["test", "unit"]
+
+    # Integration tests
+    mcp-api-integration:
+        build:
+            context: ../services/mcp-api
+            target: test
+        environment:
+            - ENVIRONMENT=test
+            - QDRANT_URL=http://qdrant-test:6333
+            - MODEL_API_URL=http://mock-model-runner:8080
+            - MCP_API_URL=http://mcp-api-test:4000
+            - LOG_LEVEL=DEBUG
+        command: >
+            sh -c "
+              pip install -r requirements-test.txt &&
+              pytest tests/integration/ -v --tb=short
+            "
+        depends_on:
+            qdrant-test:
+                condition: service_healthy
+            mock-model-runner:
+                condition: service_healthy
+            mcp-api-test:
+                condition: service_healthy
+        networks:
+            - test-network
+        profiles: ["test", "integration"]
+
+    # Main API service for testing
+    mcp-api-test:
+        build:
+            context: ../services/mcp-api
+            target: development
+        environment:
+            - ENVIRONMENT=test
+            - QDRANT_URL=http://qdrant-test:6333
+            - MODEL_API_URL=http://mock-model-runner:8080
+            - LOG_LEVEL=DEBUG
+            - DEBUG=true
+        ports:
+            - "4001:4000"
+        depends_on:
+            qdrant-test:
+                condition: service_healthy
+            mock-model-runner:
+                condition: service_healthy
+        healthcheck:
+            test: ["CMD", "curl", "-f", "http://localhost:4000/health/live"]
+            interval: 10s
+            timeout: 5s
+            retries: 5
+            start_period: 10s
+        networks:
+            - test-network
+        profiles: ["test", "integration", "e2e"]
+
+    # Test instance of Qdrant
+    qdrant-test:
+        image: qdrant/qdrant:v1.9.0
+        container_name: qdrant-test
+        ports:
+            - "6334:6333"
+        volumes:
+            - test-qdrant-data:/qdrant/storage
+        environment:
+            - QDRANT__SERVICE__HTTP_PORT=6333
+            - QDRANT__SERVICE__GRPC_PORT=6334
+            - QDRANT__LOG_LEVEL=INFO
+        healthcheck:
+            test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+            interval: 10s
+            timeout: 5s
+            retries: 5
+            start_period: 10s
+        networks:
+            - test-network
+        profiles: ["test", "integration", "e2e"]
+
+    # Mock model runner for testing
+    mock-model-runner:
+        build:
+            context: ../services/mock-model-runner
+        ports:
+            - "8081:8080"
+        environment:
+            - MOCK_LATENCY=0.1
+            - MOCK_RESPONSES=test
+            - LOG_LEVEL=DEBUG
+        healthcheck:
+            test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+            interval: 5s
+            timeout: 3s
+            retries: 5
+            start_period: 5s
+        networks:
+            - test-network
+        profiles: ["test", "integration", "e2e"]
+
+    # E2E test runner
+    e2e-tests:
+        build:
+            context: ..
+            dockerfile: tests/Dockerfile.e2e
+        environment:
+            - MCP_API_URL=http://mcp-api-test:4000
+            - MODEL_API_URL=http://mock-model-runner:8080
+            - QDRANT_URL=http://qdrant-test:6333
+            - PYTEST_ARGS=tests/e2e/ -v --tb=short --timeout=300
+        depends_on:
+            mcp-api-test:
+                condition: service_healthy
+            mock-model-runner:
+                condition: service_healthy
+            qdrant-test:
+                condition: service_healthy
+        command: >
+            sh -c "
+              sleep 5 &&
+              pytest tests/e2e/ -v --tb=short --timeout=300
+            "
+        networks:
+            - test-network
+        profiles: ["test", "e2e"]
+
+    # Load testing with Locust
+    load-tests:
+        build:
+            context: ..
+            dockerfile: tests/Dockerfile.load
+        environment:
+            - TARGET_HOST=http://mcp-api-test:4000
+        ports:
+            - "8089:8089"
+        depends_on:
+            mcp-api-test:
+                condition: service_healthy
+        command: >
+            locust --host=http://mcp-api-test:4000 --web-host=0.0.0.0 --web-port=8089
+        networks:
+            - test-network
+        profiles: ["load"]
+
+    # Test reporting service
+    test-reports:
+        image: nginx:alpine
+        ports:
+            - "8082:80"
+        volumes:
+            - test-coverage:/usr/share/nginx/html
+            - ../tests/reports:/usr/share/nginx/html/reports
+        networks:
+            - test-network
+        profiles: ["reports"]

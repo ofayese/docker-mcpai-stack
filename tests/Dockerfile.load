@@ -1,0 +1,21 @@
+# Dockerfile for load testing with Locust
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Locust and dependencies
+RUN pip install locust httpx
+
+# Copy load test files
+COPY tests/load/ tests/load/
+
+# Expose Locust web interface
+EXPOSE 8089
+
+# Default command
+CMD ["locust", "--web-host=0.0.0.0", "--web-port=8089"]

@@ -1,0 +1,199 @@
+global:
+    # SMTP configuration
+    smtp_smarthost: "${SMTP_HOST:localhost:587}"
+    smtp_from: "${SMTP_FROM:alertmanager@mcpai-stack.local}"
+    smtp_auth_username: "${SMTP_USER:}"
+    smtp_auth_password: "${SMTP_PASSWORD:}"
+    smtp_require_tls: true
+
+    # Slack webhook URL
+    slack_api_url: "${SLACK_WEBHOOK_URL:}"
+
+    # Default routing
+    resolve_timeout: 5m
+
+route:
+    # Default receiver
+    receiver: "default"
+    group_by: ["alertname", "cluster", "service"]
+    group_wait: 10s
+    group_interval: 10s
+    repeat_interval: 12h
+
+    routes:
+        # Critical alerts go to multiple channels
+        - match:
+              severity: critical
+          receiver: "critical-alerts"
+          group_wait: 0s
+          repeat_interval: 5m
+
+        # Warning alerts go to slack only
+        - match:
+              severity: warning
+          receiver: "warning-alerts"
+          repeat_interval: 30m
+
+        # Service-specific routing
+        - match:
+              service: mcp-api
+          receiver: "api-team"
+
+        - match:
+              service: model-runner
+          receiver: "ml-team"
+
+        # Infrastructure alerts
+        - match:
+              alertname: InstanceDown
+          receiver: "infrastructure-team"
+          group_wait: 0s
+          repeat_interval: 2m
+
+receivers:
+    - name: "default"
+      email_configs:
+          - to: "${DEFAULT_EMAIL:admin@mcpai-stack.local}"
+            subject: "[MCPAI] Alert: {{ .GroupLabels.alertname }}"
+            body: |
+                {{ range .Alerts }}
+                Alert: {{ .Annotations.summary }}
+                Description: {{ .Annotations.description }}
+                Instance: {{ .Labels.instance }}
+                Severity: {{ .Labels.severity }}
+
+                Labels:
+                {{ range .Labels.SortedPairs }}  {{ .Name }}: {{ .Value }}
+                {{ end }}
+
+                Annotations:
+                {{ range .Annotations.SortedPairs }}  {{ .Name }}: {{ .Value }}
+                {{ end }}
+                {{ end }}
+
+    - name: "critical-alerts"
+      email_configs:
+          - to: "${CRITICAL_EMAIL:critical@mcpai-stack.local}"
+            subject: "[MCPAI CRITICAL] {{ .GroupLabels.alertname }}"
+            body: |
+                CRITICAL ALERT TRIGGERED
+
+                {{ range .Alerts }}
+                Alert: {{ .Annotations.summary }}
+                Description: {{ .Annotations.description }}
+                Instance: {{ .Labels.instance }}
+                Started: {{ .StartsAt }}
+
+                This is a critical alert that requires immediate attention.
+                {{ end }}
+
+      slack_configs:
+          - api_url: "${SLACK_WEBHOOK_URL}"
+            channel: "#alerts-critical"
+            title: "CRITICAL: {{ .GroupLabels.alertname }}"
+            text: |
+                {{ range .Alerts }}
+                🚨 *CRITICAL ALERT* 🚨
+
+                *Alert:* {{ .Annotations.summary }}
+                *Description:* {{ .Annotations.description }}
+                *Instance:* {{ .Labels.instance }}
+                *Severity:* {{ .Labels.severity }}
+                *Started:* {{ .StartsAt }}
+                {{ end }}
+            send_resolved: true
+
+    - name: "warning-alerts"
+      slack_configs:
+          - api_url: "${SLACK_WEBHOOK_URL}"
+            channel: "#alerts-warning"
+            title: "Warning: {{ .GroupLabels.alertname }}"
+            text: |
+                {{ range .Alerts }}
+                ⚠️ *Warning Alert*
+
+                *Alert:* {{ .Annotations.summary }}
+                *Description:* {{ .Annotations.description }}
+                *Instance:* {{ .Labels.instance }}
+                *Started:* {{ .StartsAt }}
+                {{ end }}
+            send_resolved: true
+
+    - name: "api-team"
+      email_configs:
+          - to: "${API_TEAM_EMAIL:api-team@mcpai-stack.local}"
+            subject: "[API Team] Alert: {{ .GroupLabels.alertname }}"
+            body: |
+                API Service Alert
+
+                {{ range .Alerts }}
+                Service: {{ .Labels.service }}
+                Alert: {{ .Annotations.summary }}
+                Description: {{ .Annotations.description }}
+                Instance: {{ .Labels.instance }}
+                {{ end }}
+
+    - name: "ml-team"
+      email_configs:
+          - to: "${ML_TEAM_EMAIL:ml-team@mcpai-stack.local}"
+            subject: "[ML Team] Alert: {{ .GroupLabels.alertname }}"
+            body: |
+                Model Runner Alert
+
+                {{ range .Alerts }}
+                Service: {{ .Labels.service }}
+                Alert: {{ .Annotations.summary }}
+                Description: {{ .Annotations.description }}
+                Instance: {{ .Labels.instance }}
+                {{ end }}
+
+    - name: "infrastructure-team"
+      email_configs:
+          - to: "${INFRA_TEAM_EMAIL:infra-team@mcpai-stack.local}"
+            subject: "[Infrastructure] Alert: {{ .GroupLabels.alertname }}"
+            body: |
+                Infrastructure Alert
+
+                {{ range .Alerts }}
+                Alert: {{ .Annotations.summary }}
+                Description: {{ .Annotations.description }}
+                Instance: {{ .Labels.instance }}
+                Severity: {{ .Labels.severity }}
+
+                This may affect multiple services. Please investigate immediately.
+                {{ end }}
+
+      slack_configs:
+          - api_url: "${SLACK_WEBHOOK_URL}"
+            channel: "#infrastructure"
+            title: "Infrastructure Alert: {{ .GroupLabels.alertname }}"
+            text: |
+                {{ range .Alerts }}
+                🔧 *Infrastructure Alert*
+
+                *Alert:* {{ .Annotations.summary }}
+                *Instance:* {{ .Labels.instance }}
+                *Severity:* {{ .Labels.severity }}
+                {{ end }}
+
+inhibit_rules:
+    # Inhibit warning alerts if critical alert is firing
+    - source_match:
+          severity: "critical"
+      target_match:
+          severity: "warning"
+      equal: ["alertname", "instance"]
+
+    # Inhibit high response time alerts if service is down
+    - source_match:
+          alertname: "InstanceDown"
+      target_match_re:
+          alertname: "^(HighResponseTime|HighErrorRate).*"
+      equal: ["instance"]
+
+    # Inhibit disk space alerts if instance is down
+    - source_match:
+          alertname: "InstanceDown"
+      target_match:
+          alertname: "DiskSpaceWarning"
+      equal: ["instance"]

@@ -1,0 +1,52 @@
+version: "3.8"
+
+x-logging: &loki-logging
+    driver: loki
+    options:
+        loki-url: "http://loki:3100/loki/api/v1/push"
+        loki-batch-size: "400"
+        loki-retries: "5"
+        loki-timeout: "5s"
+        max-size: "10m"
+        max-file: "3"
+        labels: "job,service,container_name"
+
+services:
+    # Override logging for all services
+    mcp-api:
+        logging: *loki-logging
+
+    model-runner:
+        logging: *loki-logging
+
+    qdrant:
+        logging: *loki-logging
+
+    ui:
+        logging: *loki-logging
+
+    # Add Loki service
+    loki:
+        image: grafana/loki:2.9.0
+        container_name: mcpai-loki
+        ports:
+            - "${LOKI_PORT:-3100}:3100"
+        volumes:
+            - ../loki/local-config.yaml:/etc/loki/local-config.yaml
+            - loki_data:/loki
+        command: -config.file=/etc/loki/local-config.yaml
+        healthcheck:
+            test: ["CMD", "wget", "-q", "--spider", "http://localhost:3100/ready"]
+            interval: 30s
+            timeout: 10s
+            retries: 3
+            start_period: 30s
+        restart: unless-stopped
+        user: "10001:10001" # non-root user
+        security_opt:
+            - no-new-privileges:true
+        profiles: ["logging", "dev"]
+
+volumes:
+    loki_data:
+        driver: local

@@ -1,0 +1,75 @@
+# Testing dependencies for the Docker MCP AI Stack
+
+# Core testing framework
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.1.0
+pytest-mock>=3.11.0
+pytest-timeout>=2.1.0
+pytest-xdist>=3.3.0
+
+# HTTP testing
+httpx>=0.24.0
+requests>=2.31.0
+
+# Test utilities
+factory-boy>=3.3.0
+faker>=19.0.0
+freezegun>=1.2.0
+
+# Mocking and fixtures
+responses>=0.23.0
+pytest-httpserver>=1.0.8
+
+# Coverage reporting
+coverage[toml]>=7.3.0
+
+# Testing FastAPI applications
+fastapi[test]>=0.100.0
+pytest-fastapi>=0.1.0
+
+# Performance testing
+pytest-benchmark>=4.0.0
+
+# Database testing
+pytest-postgresql>=5.0.0
+pytest-redis>=3.0.0
+
+# Docker testing utilities
+testcontainers>=3.7.0
+docker>=6.1.0
+
+# Async testing utilities
+asyncio-mqtt>=0.13.0
+aioresponses>=0.7.4
+
+# API testing
+tavern>=2.0.0
+
+# Load testing
+locust>=2.16.0
+
+# Linting and formatting (for development)
+flake8>=6.0.0
+black>=23.7.0
+isort>=5.12.0
+mypy>=1.5.0
+
+# Security testing
+bandit>=1.7.5
+safety>=2.3.0
+
+# Documentation testing
+pytest-doctestplus>=1.0.0
+
+# Environment management for tests
+python-dotenv>=1.0.0
+
+# Monitoring and metrics testing
+prometheus-client>=0.17.0
+
+# Vector database testing (for Qdrant integration)
+qdrant-client>=1.5.0
+
+# Streamlit testing
+streamlit>=1.26.0

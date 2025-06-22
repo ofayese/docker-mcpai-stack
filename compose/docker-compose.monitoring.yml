@@ -1,0 +1,123 @@
+version: "3.8"
+
+services:
+    prometheus:
+        image: prom/prometheus:v2.48.0
+        container_name: mcpai-prometheus
+        ports:
+            - "${PROMETHEUS_PORT:-9090}:9090"
+        volumes:
+            - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+            - ../prometheus/rules:/etc/prometheus/rules
+            - prometheus_data:/prometheus
+        command:
+            - "--config.file=/etc/prometheus/prometheus.yml"
+            - "--storage.tsdb.path=/prometheus"
+            - "--web.console.libraries=/etc/prometheus/console_libraries"
+            - "--web.console.templates=/etc/prometheus/consoles"
+            - "--web.enable-lifecycle"
+            - "--alertmanager.url=http://alertmanager:9093"
+        healthcheck:
+            test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/-/healthy"]
+            interval: 30s
+            timeout: 10s
+            retries: 3
+            start_period: 30s
+        restart: unless-stopped
+        user: "65534:65534"
+        security_opt:
+            - no-new-privileges:true
+        profiles: ["monitoring", "dev"]
+        depends_on:
+            - alertmanager
+
+    alertmanager:
+        image: prom/alertmanager:v0.26.0
+        container_name: mcpai-alertmanager
+        ports:
+            - "${ALERTMANAGER_PORT:-9093}:9093"
+        volumes:
+            - ../prometheus/alertmanager.yml:/etc/alertmanager/alertmanager.yml
+            - alertmanager_data:/alertmanager
+        command:
+            - "--config.file=/etc/alertmanager/alertmanager.yml"
+            - "--storage.path=/alertmanager"
+            - "--web.external-url=http://localhost:${ALERTMANAGER_PORT:-9093}"
+            - "--web.route-prefix=/"
+        environment:
+            - SMTP_HOST=${SMTP_HOST:-localhost:587}
+            - SMTP_FROM=${SMTP_FROM:-alertmanager@mcpai-stack.local}
+            - SMTP_USER=${SMTP_USER:-}
+            - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+            - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
+            - DEFAULT_EMAIL=${DEFAULT_EMAIL:-admin@mcpai-stack.local}
+            - CRITICAL_EMAIL=${CRITICAL_EMAIL:-critical@mcpai-stack.local}
+            - API_TEAM_EMAIL=${API_TEAM_EMAIL:-api-team@mcpai-stack.local}
+            - ML_TEAM_EMAIL=${ML_TEAM_EMAIL:-ml-team@mcpai-stack.local}
+            - INFRA_TEAM_EMAIL=${INFRA_TEAM_EMAIL:-infra-team@mcpai-stack.local}
+        healthcheck:
+            test: ["CMD", "wget", "-q", "--spider", "http://localhost:9093/-/healthy"]
+            interval: 30s
+            timeout: 10s
+            retries: 3
+            start_period: 30s
+        restart: unless-stopped
+        user: "65534:65534"
+        security_opt:
+            - no-new-privileges:true
+        profiles: ["monitoring", "dev"]
+
+    grafana:
+        image: grafana/grafana:10.2.0
+        container_name: mcpai-grafana
+        ports:
+            - "${GRAFANA_PORT:-3000}:3000"
+        volumes:
+            - grafana_data:/var/lib/grafana
+            - ../grafana/dashboards:/etc/grafana/provisioning/dashboards
+            - ../grafana/datasources:/etc/grafana/provisioning/datasources
+        environment:
+            - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+            - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+            - GF_USERS_ALLOW_SIGN_UP=false
+        healthcheck:
+            test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/health"]
+            interval: 30s
+            timeout: 10s
+            retries: 3
+            start_period: 30s
+        restart: unless-stopped
+        user: "472:472"
+        security_opt:
+            - no-new-privileges:true
+        profiles: ["monitoring", "dev"]
+
+    loki:
+        image: grafana/loki:2.9.0
+        container_name: mcpai-loki
+        ports:
+            - "${LOKI_PORT:-3100}:3100"
+        volumes:
+            - loki_data:/loki
+        command: -config.file=/etc/loki/local-config.yaml
+        healthcheck:
+            test: ["CMD", "wget", "-q", "--spider", "http://localhost:3100/ready"]
+            interval: 30s
+            timeout: 10s
+            retries: 3
+            start_period: 30s
+        restart: unless-stopped
+        user: "10001:10001"
+        security_opt:
+            - no-new-privileges:true
+        profiles: ["monitoring", "dev"]
+
+volumes:
+    prometheus_data:
+        driver: local
+    grafana_data:
+        driver: local
+    loki_data:
+        driver: local
+    alertmanager_data:
+        driver: local

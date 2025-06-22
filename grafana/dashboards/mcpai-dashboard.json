@@ -1,0 +1,41 @@
+{
+  "dashboard": {
+    "id": null,
+    "uid": "mcpai-metrics",
+    "title": "MCPAI Metrics Dashboard",
+    "timezone": "browser",
+    "schemaVersion": 16,
+    "version": 0,
+    "panels": [
+      {
+        "type": "graph",
+        "title": "API Requests Total",
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+        "targets": [
+          {"expr": "sum(mcp_api_requests_total) by (endpoint)", "legendFormat": "${endpoint}"}
+        ],
+        "xaxis": {"show": true},
+        "yaxes": [{"format": "short"}, {"format": "short"}]
+      },
+      {
+        "type": "stat",
+        "title": "Active Requests",
+        "gridPos": {"x": 12, "y": 0, "w": 6, "h": 4},
+        "targets": [
+          {"expr": "mcp_api_active_requests"}
+        ],
+        "options": {"reduceOptions": {"values": false}}
+      },
+      {
+        "type": "stat",
+        "title": "Model Inferences Total",
+        "gridPos": {"x": 12, "y": 4, "w": 6, "h": 4},
+        "targets": [
+          {"expr": "sum(mcp_model_inferences_total)"}
+        ],
+        "options": {"reduceOptions": {"values": false}}
+      }
+    ]
+  },
+  "overwrite": true
+}

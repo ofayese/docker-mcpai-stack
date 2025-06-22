@@ -10,17 +10,12 @@ import structlog
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
-from prometheus_client import (
-    Counter, 
-    Histogram, 
-    generate_latest, 
-    CONTENT_TYPE_LATEST
-)
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 import uvicorn
 
-from .routers import chat, models, health, mcp
+from .routers import chat, models, health, mcp, metrics
 from .core.config import settings
-from .core.monitoring import setup_metrics
+from .core.monitoring import setup_metrics, MetricsMiddleware
 
 # Configure structured logging
 structlog.configure(
@@ -43,27 +38,16 @@ structlog.configure(
 
 logger = structlog.get_logger()
 
-# Metrics
-request_count = Counter(
-    'mcp_api_requests_total', 
-    'Total API requests', 
-    ['method', 'endpoint', 'status']
-)
-request_duration = Histogram(
-    'mcp_api_request_duration_seconds', 
-    'Request duration', 
-    ['method', 'endpoint']
-)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan events"""
     logger.info("Starting MCP API Gateway", version=settings.VERSION)
-    
+
     # Initialize metrics
     setup_metrics()
-    
+
     # Initialize connections
     # Set up Qdrant client for vector store
     try:
@@ -84,9 +68,9 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error("Model runner health check failed", error=str(e))
         raise
-    
+
     yield
-    
+
     logger.info("Shutting down MCP API Gateway")
 
 
@@ -98,32 +82,18 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Add metrics middleware
+app.add_middleware(MetricsMiddleware)
+
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-
-@app.middleware("http")
-async def monitoring_middleware(request: Request, call_next):
-    """Add monitoring to all requests"""
-    method = request.method
-    endpoint = request.url.path
-    
-    with request_duration.labels(method=method, endpoint=endpoint).time():
-        response = await call_next(request)
-    
-    request_count.labels(
-        method=method,
-        endpoint=endpoint,
-        status=response.status_code
-    ).inc()
-    
-    return response
 
 
 @app.exception_handler(Exception)
@@ -141,6 +111,7 @@ app.include_router(health.router, prefix="/health", tags=["health"])
 app.include_router(models.router, prefix="/v1/models", tags=["models"])
 app.include_router(chat.router, prefix="/v1/chat", tags=["chat"])
 app.include_router(mcp.router, prefix="/mcp", tags=["mcp"])
+app.include_router(metrics.router, prefix="/v1/metrics", tags=["metrics"])
 
 
 @app.get("/metrics")
@@ -153,22 +124,15 @@ async def metrics():
 async def root():
     """Root endpoint"""
     return {
-        "service": "MCP API Gateway",
+        "name": "MCP API Gateway",
         "version": settings.VERSION,
-        "status": "healthy",
-        "endpoints": {
-            "health": "/health",
-            "models": "/v1/models",
-            "chat": "/v1/chat/completions",
-            "mcp": "/mcp",
-            "metrics": "/metrics"
-        }
+        "status": "operational"
     }
 
 
 if __name__ == "__main__":
     uvicorn.run(
-        "main:app",
+        "src.main:app",
         host="0.0.0.0",
         port=4000,
         reload=True if os.getenv("ENVIRONMENT") == "development" else False

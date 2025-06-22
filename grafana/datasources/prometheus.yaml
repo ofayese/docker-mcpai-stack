@@ -1,0 +1,15 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    orgId: 1
+    # Use environment variable or default
+    url: ${PROMETHEUS_URL:http://prometheus:9090}
+    basicAuth: false
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: "15s"
