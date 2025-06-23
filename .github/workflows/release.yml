@@ -248,7 +248,7 @@ jobs:
                   tar -czf docker-mcpai-stack-${{ steps.version.outputs.version }}-universal.tar.gz universal/
 
             - name: Upload release packages
-              uses: softprops/action-gh-release@v1
+              uses: softprops/action-gh-release@v2
               with:
                   files: |
                       releases/docker-mcpai-stack-${{ steps.version.outputs.version }}-windows.tar.gz
