@@ -79,7 +79,7 @@ jobs:
             org.opencontainers.image.vendor=Docker MCPAI Stack
 
       - name: Build and test platform-specific images
-        uses: docker/bake-action@v4
+        uses: docker/bake-action@v6
         with:
           files: |
             ./docker-bake.hcl
@@ -103,7 +103,7 @@ jobs:
 
       - name: Push images (if not PR)
         if: github.event_name != 'pull_request'
-        uses: docker/bake-action@v4
+        uses: docker/bake-action@v6
         with:
           files: |
             ./docker-bake.hcl
