@@ -1,0 +1,11 @@
+﻿{
+  "agentId": 21,
+  "agentName": "HPDEVCORE-WIN",
+  "poolId": 1,
+  "poolName": "Default",
+  "serverUrl": "https://pipelinesghubeus10.actions.githubusercontent.com/97x6biSXOTXNwKQWxPKUynGQtKruWz9OJgL9jSOPR4wRJG0jU2/",
+  "gitHubUrl": "https://github.com/ofayese/docker-mcpai-stack",
+  "workFolder": "_work",
+  "useV2Flow": true,
+  "serverUrlV2": "https://broker.actions.githubusercontent.com/"
+}

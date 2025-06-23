@@ -1,0 +1,44 @@
+name: SonarQube Analysis (Self-Hosted)
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  sonarqube:
+    runs-on: self-hosted  # You'll need a self-hosted runner
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        if [ -f requirements-test.txt ]; then pip install -r requirements-test.txt; fi
+        if [ -f services/mcp-api/requirements.txt ]; then pip install -r services/mcp-api/requirements.txt; fi
+        if [ -f services/mcp-worker/requirements.txt ]; then pip install -r services/mcp-worker/requirements.txt; fi
+
+    - name: Run tests with coverage
+      run: |
+        python -m pytest tests/ --cov=services --cov-report=xml --cov-report=term-missing
+      continue-on-error: true
+
+    - name: SonarQube Scan
+      run: |
+        docker run --rm --network="host" \
+          -v "${{ github.workspace }}:/usr/src" \
+          sonarsource/sonar-scanner-cli \
+          -Dsonar.projectKey=docker-mcpai-stack \
+          -Dsonar.sources=. \
+          -Dsonar.host.url=http://host.docker.internal:9000 \
+          -Dsonar.token=${{ secrets.SONARQUBE_SELFHOSTED_TOKEN }}

@@ -1,7 +1,7 @@
 .PHONY: help up gpu-up dev gpu-dev down build rebuild clean logs ps
 .PHONY: test test-unit test-integration test-e2e test-load test-all test-osx test-linux test-windows
 .PHONY: lint format docs docs-serve pull-models build-multiarch coverage sbom
-.PHONY: monitoring backup restore metrics security-scan
+.PHONY: monitoring backup restore metrics security-scan sonar-offline sonar-online sonar-help
 .PHONY: dev-setup env-check health-check
 .PHONY: up-windows up-linux up-macos dev-windows dev-linux dev-macos
 
@@ -214,6 +214,42 @@ security-scan: ## Run security scans on images
 	trivy image docker-mcpai-stack_ui:latest
 	@echo "Scanning Mock Model Runner image..."
 	trivy image docker-mcpai-stack_mock-model-runner:latest
+
+sonar-offline: ## Run SonarQube analysis offline using Docker
+	@echo "🔍 Running SonarQube analysis offline..."
+ifeq ($(OS),Windows_NT)
+	@bash scripts/sonar-offline.sh
+else
+	@./scripts/sonar-offline.sh
+endif
+
+sonar-online: ## Trigger SonarCloud analysis via GitHub Actions
+	@echo "☁️  Triggering SonarCloud analysis..."
+ifeq ($(OS),Windows_NT)
+	@bash scripts/sonar-online.sh
+else
+	@./scripts/sonar-online.sh
+endif
+
+sonar-help: ## Show SonarQube usage help
+	@echo "📊 SonarQube Analysis Options"
+	@echo "=============================="
+	@echo ""
+	@echo "🏠 OFFLINE (Local SonarQube Server):"
+	@echo "   make sonar-offline    - Run analysis against local SonarQube (http://localhost:9000)"
+	@echo "   Uses: sonar-project.local.properties"
+	@echo ""
+	@echo "☁️  ONLINE (SonarCloud):"
+	@echo "   make sonar-online     - Trigger SonarCloud analysis via GitHub Actions"
+	@echo "   Uses: sonar-project.properties"
+	@echo ""
+	@echo "📝 Configuration Files:"
+	@echo "   sonar-project.properties       - SonarCloud configuration"
+	@echo "   sonar-project.local.properties - Local SonarQube configuration"
+	@echo ""
+	@echo "🔧 Prerequisites:"
+	@echo "   Offline: Local SonarQube server running on port 9000"
+	@echo "   Online:  SONAR_TOKEN secret configured in GitHub repository"
 
 env-check: ## Check environment setup
 	@echo "🔍 Checking environment setup..."
