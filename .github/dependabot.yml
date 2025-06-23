@@ -1,0 +1,161 @@
+version: 2
+updates:
+  # Python pip dependencies
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "pip"
+    groups:
+      python-libs:
+        patterns: ["*"]
+
+  # Python pip dependencies in services directories
+  - package-ecosystem: "pip"
+    directory: "/services/mcp-api"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "pip"
+    groups:
+      mcp-api-python:
+        patterns: ["*"]
+
+  - package-ecosystem: "pip"
+    directory: "/services/mcp-worker"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "pip"
+    groups:
+      mcp-worker-python:
+        patterns: ["*"]
+
+  - package-ecosystem: "pip"
+    directory: "/services/ui"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "pip"
+    groups:
+      ui-python:
+        patterns: ["*"]
+
+  - package-ecosystem: "pip"
+    directory: "/services/mock-model-runner"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "pip"
+    groups:
+      mock-model-runner-python:
+        patterns: ["*"]
+
+  # Python Poetry dependencies (future-proofing)
+  - package-ecosystem: "poetry"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "poetry"
+    groups:
+      python-poetry-libs:
+        patterns: ["*"]
+
+  # Node.js npm dependencies
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "npm"
+    groups:
+      node-modules:
+        patterns: ["*"]
+
+  # Docker base images
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "docker"
+    groups:
+      docker-images:
+        patterns: ["*"]
+
+  # GitHub Actions workflows
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "actions"
+
+  # Terraform (future-proofing)
+  - package-ecosystem: "terraform"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "terraform"
+
+# Shell/PowerShell scripts: No native Dependabot support. Dependencies in
+# Shell/PowerShell scripts (like setup-environment.sh, setup-environment.ps1,
+# validate-cross-platform.sh, etc.) should be captured through the above
+# package managers wherever possible.
+#
+# To support additional directories with dependency manifests:
+# 1. Copy an appropriate block above (e.g., for pip, npm, docker)
+# 2. Change the directory path to point to your new location
+# 3. Update the group name to be unique
+# Example:
+#   - package-ecosystem: "npm"
+#     directory: "/frontend"  # if you have frontend/package.json
+#     schedule:
+#       interval: "weekly"
+#     groups:
+#       frontend-node-modules:
+#         patterns: ["*"]
+
+# Auto-merge Configuration:
+# Dependabot v2 doesn't support native automerge in the configuration file.
+# To enable auto-merge for security updates, you can:
+# 1. Use GitHub's auto-merge feature with branch protection rules
+# 2. Use GitHub Actions workflows to auto-approve and merge Dependabot PRs
+# 3. Configure auto-merge settings in the GitHub repository settings
+#
+# Example GitHub Action for auto-merge (create .github/workflows/dependabot-automerge.yml):
+# 
+# name: Dependabot Auto-merge
+# on: pull_request
+# permissions:
+#   pull-requests: write
+#   contents: write
+# jobs:
+#   dependabot:
+#     runs-on: ubuntu-latest
+#     if: github.actor == 'dependabot[bot]'
+#     steps:
+#       - name: Dependabot metadata
+#         id: metadata
+#         uses: dependabot/fetch-metadata@v1
+#         with:
+#           github-token: "${{ secrets.GITHUB_TOKEN }}"
+#       - name: Auto-merge for security updates
+#         if: steps.metadata.outputs.update-type == 'version-update:semver-patch'
+#         run: gh pr merge --auto --merge "$PR_URL"
+#         env:
+#           PR_URL: ${{github.event.pull_request.html_url}}
+#           GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
