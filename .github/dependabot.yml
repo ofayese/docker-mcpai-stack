@@ -1,0 +1,84 @@
+---
+# Dependabot configuration for automated dependency updates
+# This file configures Dependabot to monitor and update dependencies across
+# multiple ecosystems
+
+version: 2
+updates:
+  # Python dependencies (pip ecosystem)
+  # Monitors requirements.txt files and Python dependencies
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "pip"
+    groups:
+      python-libs:
+        patterns:
+          - "*"
+
+  # Docker dependencies
+  # Monitors Dockerfile FROM statements and docker-compose image references
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "docker"
+    groups:
+      docker-images:
+        patterns:
+          - "*"
+
+  # GitHub Actions dependencies
+  # Monitors .github/workflows/ for action version updates
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "actions"
+
+  # Terraform/HCL dependencies
+  # Monitors .tf and .hcl files for provider and module updates
+  - package-ecosystem: "terraform"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "terraform"
+
+  # Security updates (enabled by default on GitHub)
+  # To auto-merge security patches, uncomment below:
+  # automerged_updates:
+  #   - match:
+  #       dependency_type: "all"
+  #       update_type: "security"
+
+# Add further package-ecosystem blocks if you use additional dependency
+# managers or have dependencies in other directories.
+# Supported ecosystems include: bundler, cargo, composer, elm, gitsubmodule,
+# gomod, gradle, mix, npm, nuget, pub, swift
+#
+# Example for npm (if you add Node.js dependencies):
+# - package-ecosystem: "npm"
+#   directory: "/"
+#   schedule:
+#     interval: "weekly"
+#   open-pull-requests-limit: 5
+#   commit-message:
+#     prefix: "npm"
+#
+# Example for service-specific directories:
+# - package-ecosystem: "pip"
+#   directory: "/services/mcp-api"
+#   schedule:
+#     interval: "weekly"
+#   open-pull-requests-limit: 3
+#   commit-message:
+#     prefix: "pip-api"
