@@ -20,7 +20,7 @@ jobs:
   # Build matrix for different platforms
   build-matrix:
     name: Build ${{ matrix.platform }} (${{ matrix.arch }})
-    runs-on: ${{ matrix.runner }}
+    runs-on: self-hosted
     strategy:
       fail-fast: false
       matrix:
@@ -28,19 +28,19 @@ jobs:
           # Linux AMD64
           - platform: linux
             arch: amd64
-            runner: ubuntu-latest
+            runner: self-hosted
             docker_platform: linux/amd64
 
           # Linux ARM64
           - platform: linux
             arch: arm64
-            runner: ubuntu-latest
+            runner: self-hosted
             docker_platform: linux/arm64
 
           # Windows AMD64 (for Windows containers if needed)
           - platform: windows
             arch: amd64
-            runner: windows-latest
+            runner: self-hosted
             docker_platform: windows/amd64
 
     steps:
@@ -117,7 +117,7 @@ jobs:
   # Create multi-platform manifest
   create-manifest:
     name: Create Multi-Platform Manifest
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     needs: build-matrix
     if: github.event_name != 'pull_request'
 
@@ -159,10 +159,17 @@ jobs:
             fi
           done
 
+          # Add CodeGPT service to manifest creation
+          echo "Creating manifest for codegpt"
+          docker buildx imagetools create \
+            --tag ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/codegpt:latest \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/codegpt:latest-linux-amd64 \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/codegpt:latest-linux-arm64
+
   # SonarQube analysis
   sonarqube:
     name: SonarQube
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
 
     steps:
       - uses: actions/checkout@v4
@@ -177,7 +184,7 @@ jobs:
   # Performance benchmarks
   performance-benchmark:
     name: Performance Benchmarks
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     needs: build-matrix
 
     steps:
@@ -213,6 +220,11 @@ jobs:
           # Stop the stack
           make down
 
+      - name: Upload performance report
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-report
+          path: performance-report.txt
       - name: Upload performance report
         uses: actions/upload-artifact@v4
         with:
