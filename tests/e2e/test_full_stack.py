@@ -1,5 +1,6 @@
 """End-to-end tests for the complete MCP AI stack."""
 
+import asyncio
 import time
 from typing import Any, Dict
 

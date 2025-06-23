@@ -1,6 +1,7 @@
 # Model Runner - Unified LLM API Service
 # Based on Docker Model Runner with llama.cpp backend
-FROM docker/model-runner:latest AS base
+ARG MODEL_RUNNER_VERSION=v1.8.0
+FROM docker/model-runner:${MODEL_RUNNER_VERSION} AS base
 
 # Add custom configuration and scripts
 WORKDIR /app
