@@ -1,78 +1,31 @@
 version: 2
 updates:
-  # Python: pip (requirements.txt, setup.py, etc.)
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+
+  - package-ecosystem: "docker"
+    directory: "/nginx"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
-    commit-message:
-      prefix: "pip"
-    groups:
-      python-libs:
-        patterns: ["*"]
 
-  # Python: poetry (pyproject.toml)
-  - package-ecosystem: "poetry"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 10
-    commit-message:
-      prefix: "poetry"
-    groups:
-      python-poetry-libs:
-        patterns: ["*"]
-
-  # Node.js: npm (package.json)
-  - package-ecosystem: "npm"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 5
-    commit-message:
-      prefix: "npm"
-    groups:
-      node-modules:
-        patterns: ["*"]
-
-  # Docker images
-  - package-ecosystem: "docker"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 5
-    commit-message:
-      prefix: "docker"
-    groups:
-      docker-images:
-        patterns: ["*"]
-
-  # GitHub Actions
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
-    commit-message:
-      prefix: "actions"
-
-  # Terraform (HCL)
-  - package-ecosystem: "terraform"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 5
-    commit-message:
-      prefix: "terraform"
-
-# Shell/PowerShell: No native Dependabot support. For shell scripts (bash, sh, ps1), manage tools (e.g., pip, npm, etc.) via their respective package managers above.
-# Makefile: If Makefile calls package managers, ensure the relevant ecosystem is covered above.
-# Add additional directories or ecosystems as needed if you have subdirectories with their own dependency manifests.
-
-# Security updates (enabled by default on GitHub)
-# To auto-merge security patches, uncomment below:
- automerged_updates:
-   - match:
-      dependency_type: "all"
-      update_type: "security"
