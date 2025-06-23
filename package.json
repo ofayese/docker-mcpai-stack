@@ -1,0 +1,24 @@
+{
+  "name": "docker-mcpai-stack",
+  "version": "2.0.0",
+  "description": "Cross-platform GenAI development environment with modular services",
+  "scripts": {
+    "lint:md": "markdownlint '**/*.md' --ignore node_modules --config .markdownlint.json",
+    "lint:md:fix": "markdownlint '**/*.md' --ignore node_modules --config .markdownlint.json --fix",
+    "lint:md:report": "markdownlint '**/*.md' --ignore node_modules --config .markdownlint.json --output markdown-lint-report.txt"
+  },
+  "devDependencies": {
+    "markdownlint": "^0.35.0",
+    "markdownlint-cli": "^0.45.0"
+  },
+  "keywords": [
+    "docker",
+    "mcp",
+    "ai",
+    "genai",
+    "microservices",
+    "monitoring"
+  ],
+  "author": "Docker MCP Stack Contributors",
+  "license": "MIT"
+}

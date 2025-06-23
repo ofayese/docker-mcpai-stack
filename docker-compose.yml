@@ -1,0 +1,9 @@
+version: "3.8"
+
+# Main Docker Compose file for Docker MCP Stack
+# This file extends the base configuration for easy development setup
+
+include:
+    - compose/docker-compose.base.yml
+    - compose/docker-compose.dev.yml
+# Override any development-specific settings here if needed
