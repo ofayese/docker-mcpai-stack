@@ -33,6 +33,13 @@ jobs:
         python -m pytest tests/ --cov=services --cov-report=xml --cov-report=term-missing
       continue-on-error: true
 
+    - name: Check SonarQube Token
+      run: |
+        if [ -z "${{ secrets.SONARQUBE_SELFHOSTED_TOKEN }}" ]; then
+          echo "SONARQUBE_SELFHOSTED_TOKEN secret is not set." >&2
+          exit 1
+        fi
+
     - name: SonarQube Scan
       run: |
         docker run --rm --network="host" \
