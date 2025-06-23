@@ -2,6 +2,11 @@
 
 ✨ A modern, cross-platform GenAI development environment with modular services
 
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=docker-mcpai-stack&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=docker-mcpai-stack)
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=docker-mcpai-stack&metric=coverage)](https://sonarcloud.io/summary/new_code?id=docker-mcpai-stack)
+[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=docker-mcpai-stack&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=docker-mcpai-stack)
+[![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=docker-mcpai-stack&metric=sqale_rating)](https://sonarcloud.io/summary/new_code?id=docker-mcpai-stack)
+
 ![Docker MCPAI Stack Demo](assets/demo.gif)
 
 ## ✨ Features
@@ -12,6 +17,7 @@
 - 🖥️ **GPU Acceleration**: CUDA support for faster inference
 - 📈 **Observability**: Prometheus, Grafana, and Loki integration
 - 🔒 **Security**: Non-root containers, vulnerability scanning, SBOM
+- 🧪 **Code Quality**: SonarCloud integration for continuous quality monitoring
 - 👨‍💻 **Developer Experience**: VS Code devcontainer, hot-reload, and more
 
 ## 🚀 Quick Start

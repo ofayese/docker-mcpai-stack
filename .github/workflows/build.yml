@@ -8,6 +8,7 @@ on:
     tags:
       - 'v*'
   pull_request:
+    types: [opened, synchronize, reopened]
     branches:
       - main
 
@@ -159,28 +160,19 @@ jobs:
           done
 
   # SonarQube analysis
-  sonarqube-analysis:
-    name: SonarQube Analysis
+  sonarqube:
+    name: SonarQube
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Shallow clones should be disabled for better analysis
+          fetch-depth: 0  # Shallow clones should be disabled for a better relevancy of analysis
 
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@v5
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-
-      # Uncomment to fail the job when the Quality Gate is red
-      # - name: SonarQube Quality Gate check
-      #   uses: SonarSource/sonarqube-quality-gate-action@v1
-      #   timeout-minutes: 5
-      #   env:
-      #     SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
   # Performance benchmarks
   performance-benchmark:
