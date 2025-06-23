@@ -1,6 +1,8 @@
 #!/bin/bash
 # Bash script for offline SonarQube analysis using Docker
 
+set -e
+
 CONFIG_FILE=${1:-"sonar-project.local.properties"}
 
 echo "🔍 Running SonarQube analysis offline using Docker..."
