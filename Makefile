@@ -1,16 +1,20 @@
 .PHONY: help up gpu-up dev gpu-dev down build rebuild clean logs ps
-.PHONY: test test-unit test-integration test-e2e test-load test-all test-osx test-linux
+.PHONY: test test-unit test-integration test-e2e test-load test-all test-osx test-linux test-windows
 .PHONY: lint format docs docs-serve pull-models build-multiarch coverage sbom
 .PHONY: monitoring backup restore metrics security-scan
 .PHONY: dev-setup env-check health-check
+.PHONY: up-windows up-linux up-macos dev-windows dev-linux dev-macos
 
 # Show help for each of the Makefile recipes.
 help: ## Show this help message
 	@echo "Docker MCPAI Stack - Developer Commands"
 	@echo "======================================="
 	@echo ""
-	@echo "🚀 DEVELOPMENT"
-	@grep -E '^[a-zA-Z0-9_-]*dev[a-zA-Z0-9_-]*:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
+	@echo "🚀 CROSS-PLATFORM DEVELOPMENT"
+	@grep -E '^[a-zA-Z0-9_-]*-(windows|linux|macos)[a-zA-Z0-9_-]*:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
+	@echo ""
+	@echo "🚀 GENERAL DEVELOPMENT"
+	@grep -E '^[a-zA-Z0-9_-]*dev[a-zA-Z0-9_-]*:.*?## .*$$' $(MAKEFILE_LIST) | grep -v -E '(windows|linux|macos)' | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
 	@echo ""
 	@echo "🏗️  BUILD & DEPLOYMENT"
 	@grep -E '^(build|up|down|rebuild):.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -27,17 +31,63 @@ help: ## Show this help message
 # Default profile (cpu or gpu)
 PROFILE ?= cpu
 
-# Docker compose command with base file
-COMPOSE = docker compose -f compose/docker-compose.base.yml
+# Auto-detect OS for platform-specific configurations
+UNAME_S := $(shell uname -s 2>/dev/null || echo Windows)
+PLATFORM_COMPOSE :=
+ifeq ($(UNAME_S),Linux)
+    PLATFORM_COMPOSE := -f compose/docker-compose.linux.yml
+    DETECTED_OS := linux
+endif
+ifeq ($(UNAME_S),Darwin)
+    PLATFORM_COMPOSE := -f compose/docker-compose.macos.yml
+    DETECTED_OS := macos
+endif
+ifeq ($(UNAME_S),Windows)
+    PLATFORM_COMPOSE := -f compose/docker-compose.windows.yml
+    DETECTED_OS := windows
+endif
+ifeq ($(OS),Windows_NT)
+    PLATFORM_COMPOSE := -f compose/docker-compose.windows.yml
+    DETECTED_OS := windows
+endif
 
-up: ## Start stack (CPU mode)
+# Docker compose command with base file and platform-specific overrides
+COMPOSE = docker compose -f compose/docker-compose.base.yml $(PLATFORM_COMPOSE)
+
+up: ## Start stack (CPU mode, auto-detect OS)
+	@echo "🚀 Starting stack on detected OS: $(DETECTED_OS)"
 	$(COMPOSE) --profile $(PROFILE) up -d
+
+up-windows: ## Start stack on Windows (CPU mode)
+	@echo "🚀 Starting stack on Windows..."
+	docker compose -f compose/docker-compose.base.yml -f compose/docker-compose.windows.yml --profile $(PROFILE) up -d
+
+up-linux: ## Start stack on Linux (CPU mode)
+	@echo "🚀 Starting stack on Linux..."
+	docker compose -f compose/docker-compose.base.yml -f compose/docker-compose.linux.yml --profile $(PROFILE) up -d
+
+up-macos: ## Start stack on macOS (CPU mode)
+	@echo "🚀 Starting stack on macOS..."
+	docker compose -f compose/docker-compose.base.yml -f compose/docker-compose.macos.yml --profile $(PROFILE) up -d
 
 monitoring: ## Start stack with monitoring services
 	$(COMPOSE) -f compose/docker-compose.monitoring.yml --profile $(PROFILE) --profile monitoring up -d
 
-dev: ## Start development stack with hot-reload
-	$(COMPOSE) -f compose/compose.dev.yaml --profile dev up
+dev: ## Start development stack with hot-reload (auto-detect OS)
+	@echo "🚀 Starting development stack on detected OS: $(DETECTED_OS)"
+	$(COMPOSE) -f compose/docker-compose.dev.yml --profile dev up
+
+dev-windows: ## Start development stack on Windows with hot-reload
+	@echo "🚀 Starting development stack on Windows..."
+	docker compose -f compose/docker-compose.base.yml -f compose/docker-compose.windows.yml -f compose/docker-compose.dev.yml --profile dev up
+
+dev-linux: ## Start development stack on Linux with hot-reload
+	@echo "🚀 Starting development stack on Linux..."
+	docker compose -f compose/docker-compose.base.yml -f compose/docker-compose.linux.yml -f compose/docker-compose.dev.yml --profile dev up
+
+dev-macos: ## Start development stack on macOS with hot-reload
+	@echo "🚀 Starting development stack on macOS..."
+	docker compose -f compose/docker-compose.base.yml -f compose/docker-compose.macos.yml -f compose/docker-compose.dev.yml --profile dev up
 
 gpu-up: ## Start stack (GPU mode)
 	$(COMPOSE) --profile gpu up -d
@@ -81,15 +131,19 @@ test-reports: ## Start test reports server
 	@echo "Reports available at http://localhost:8082"
 	docker compose -f compose/docker-compose.test.yml --profile reports up -d
 
-test-osx: ## Run tests on macOS (ARM64)
-	# macOS specific test commands
-	echo "Running on macOS (ARM64)"
-	docker compose run --rm mcpai-api pytest -m "not slow"
+test-osx: test-macos ## Alias for test-macos
+
+test-macos: ## Run tests on macOS (Intel/Apple Silicon)
+	@echo "🧪 Running tests on macOS..."
+	docker compose -f compose/docker-compose.base.yml -f compose/docker-compose.macos.yml -f compose/docker-compose.test.yml run --rm mcpai-api pytest -m "not slow"
 
 test-linux: ## Run tests on Linux
-	# Linux specific test commands
-	echo "Running on Linux"
-	docker compose run --rm mcpai-api pytest
+	@echo "🧪 Running tests on Linux..."
+	docker compose -f compose/docker-compose.base.yml -f compose/docker-compose.linux.yml -f compose/docker-compose.test.yml run --rm mcpai-api pytest
+
+test-windows: ## Run tests on Windows/WSL2
+	@echo "🧪 Running tests on Windows..."
+	docker compose -f compose/docker-compose.base.yml -f compose/docker-compose.windows.yml -f compose/docker-compose.test.yml run --rm mcpai-api pytest
 
 lint: ## Run linters
 	docker compose run --rm mcpai-api bash -c "ruff check . && black --check ."
@@ -163,14 +217,27 @@ security-scan: ## Run security scans on images
 
 env-check: ## Check environment setup
 	@echo "🔍 Checking environment setup..."
+	@echo "Detected OS: $(DETECTED_OS)"
 	@echo "Docker version:"
 	@docker --version
 	@echo "Docker Compose version:"
 	@docker compose version
 	@echo "Available disk space:"
-	@df -h
+	@if [ "$(DETECTED_OS)" = "windows" ]; then \
+		echo "Windows detected - use PowerShell or WSL2 for best experience"; \
+		dir /c; \
+	else \
+		df -h; \
+	fi
 	@echo "Environment variables:"
 	@echo "PROFILE: $(PROFILE)"
+	@echo "PLATFORM_COMPOSE: $(PLATFORM_COMPOSE)"
+	@echo ""
+	@echo "💡 Platform-specific quick start:"
+	@echo "  Windows: make up-windows or make dev-windows"
+	@echo "  Linux:   make up-linux or make dev-linux"
+	@echo "  macOS:   make up-macos or make dev-macos"
+	@echo "  Auto:    make up or make dev (auto-detects OS)"
 
 health-check: ## Check health of running services
 	@echo "🏥 Checking service health..."

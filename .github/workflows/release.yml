@@ -1,4 +1,4 @@
-name: Release
+name: Release - Cross-Platform
 
 on:
     workflow_dispatch:
@@ -7,10 +7,89 @@ on:
                 description: "Release type (major, minor, patch)"
                 required: true
                 default: "patch"
+    push:
+        tags:
+            - 'v*'
+
+env:
+    REGISTRY: ghcr.io
+    IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-    release:
+    # Cross-platform release build
+    cross-platform-release:
+        name: Release ${{ matrix.platform }} (${{ matrix.arch }})
+        runs-on: ${{ matrix.runner }}
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    # Linux builds
+                    - platform: linux
+                      arch: amd64
+                      runner: ubuntu-latest
+                      docker_platform: linux/amd64
+
+                    - platform: linux
+                      arch: arm64
+                      runner: ubuntu-latest
+                      docker_platform: linux/arm64
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+
+            - name: Set up QEMU
+              uses: docker/setup-qemu-action@v3
+
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@v3
+
+            - name: Login to GitHub Container Registry
+              uses: docker/login-action@v3
+              with:
+                  registry: ${{ env.REGISTRY }}
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Login to Docker Hub
+              env:
+                  DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+                  DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+              if: env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != ''
+              uses: docker/login-action@v3
+              with:
+                  username: ${{ env.DOCKERHUB_USERNAME }}
+                  password: ${{ env.DOCKERHUB_TOKEN }}
+
+            - name: Extract version
+              id: version
+              run: |
+                  if [[ $GITHUB_REF == refs/tags/* ]]; then
+                      VERSION=${GITHUB_REF#refs/tags/}
+                  else
+                      VERSION="latest"
+                  fi
+                  echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+            - name: Build and push release images
+              uses: docker/bake-action@v4
+              with:
+                  push: true
+                  files: ./docker-bake.hcl
+                  targets: default
+                  set: |
+                      *.platform=${{ matrix.docker_platform }}
+                      *.cache-from=type=gha,scope=${{ matrix.platform }}-${{ matrix.arch }}
+                      *.cache-to=type=gha,scope=${{ matrix.platform }}-${{ matrix.arch }},mode=max
+                      *.tags=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/mcpai-api:${{ steps.version.outputs.version }}-${{ matrix.platform }}-${{ matrix.arch }}
+
+    # Create semantic release (if triggered manually)
+    semantic-release:
         runs-on: ubuntu-latest
+        if: github.event_name == 'workflow_dispatch'
         steps:
             - name: Checkout
               uses: actions/checkout@v4
@@ -25,15 +104,6 @@ jobs:
             - name: Install semantic-release
               run: npm install -g semantic-release @semantic-release/changelog @semantic-release/git
 
-            - name: Set up Docker Buildx
-              uses: docker/setup-buildx-action@v3
-
-            - name: Login to Docker Hub
-              uses: docker/login-action@v3
-              with:
-                  username: ${{ secrets.DOCKERHUB_USERNAME }}
-                  password: ${{ secrets.DOCKERHUB_TOKEN }}
-
             - name: Create Release
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -41,11 +111,187 @@ jobs:
               run: |
                   npx semantic-release --branches main --no-ci
 
-            - name: Build and push images
-              uses: docker/bake-action@v4
+    # Create multi-platform manifests
+    create-manifests:
+        name: Create Multi-Platform Manifests
+        runs-on: ubuntu-latest
+        needs: cross-platform-release
+        if: always() && needs.cross-platform-release.result == 'success'
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@v3
+
+            - name: Login to GitHub Container Registry
+              uses: docker/login-action@v3
               with:
-                  push: true
-                  files: ./docker-bake.hcl
-                  set: |
-                      *.cache-from=type=gha
-                      *.tags=type=semver,pattern={{version}}
+                  registry: ${{ env.REGISTRY }}
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Extract version
+              id: version
+              run: |
+                  if [[ $GITHUB_REF == refs/tags/* ]]; then
+                      VERSION=${GITHUB_REF#refs/tags/}
+                  else
+                      VERSION="latest"
+                  fi
+                  echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+            - name: Create multi-platform manifests
+              run: |
+                  services=("mcpai-api" "mcpai-worker" "mcpai-ui" "mcpai-model-runner")
+
+                  for service in "${services[@]}"; do
+                      echo "Creating manifest for $service:${{ steps.version.outputs.version }}"
+
+                      # Create version-specific manifest
+                      docker buildx imagetools create \
+                          --tag ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/$service:${{ steps.version.outputs.version }} \
+                          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/$service:${{ steps.version.outputs.version }}-linux-amd64 \
+                          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/$service:${{ steps.version.outputs.version }}-linux-arm64
+
+                      # Update latest manifest
+                      docker buildx imagetools create \
+                          --tag ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/$service:latest \
+                          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/$service:${{ steps.version.outputs.version }}-linux-amd64 \
+                          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/$service:${{ steps.version.outputs.version }}-linux-arm64
+                  done
+
+    # Create platform-specific release packages
+    create-platform-packages:
+        name: Create Platform Packages
+        runs-on: ubuntu-latest
+        needs: create-manifests
+        if: startsWith(github.ref, 'refs/tags/')
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Extract version
+              id: version
+              run: |
+                  VERSION=${GITHUB_REF#refs/tags/}
+                  echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+            - name: Create platform-specific packages
+              run: |
+                  mkdir -p releases
+
+                  # Create platform packages with installation scripts
+                  platforms=("windows" "linux" "macos")
+
+                  for platform in "${platforms[@]}"; do
+                      echo "Creating $platform release package..."
+                      mkdir -p releases/$platform
+
+                      # Copy common files
+                      cp -r compose/ releases/$platform/
+                      cp -r nginx/ releases/$platform/
+                      cp -r scripts/ releases/$platform/
+                      cp -r docs/ releases/$platform/
+                      cp Makefile releases/$platform/
+                      cp .env.example releases/$platform/
+                      cp README.md releases/$platform/
+
+                      # Create platform-specific docker-compose.yml
+                      cat > releases/$platform/docker-compose.yml << EOF
+                  version: "3.8"
+                  include:
+                    - compose/docker-compose.base.yml
+                    - compose/docker-compose.$platform.yml
+                  EOF
+
+                      # Create installation script
+                      if [ "$platform" = "windows" ]; then
+                          cat > releases/$platform/install.ps1 << 'EOF'
+                  # Docker MCP Stack - Windows Installation
+                  Write-Host "🚀 Installing Docker MCP Stack for Windows..." -ForegroundColor Green
+                  .\scripts\setup-environment.ps1
+                  Write-Host "✅ Installation complete!" -ForegroundColor Green
+                  Write-Host "Run 'make up-windows' to start the stack." -ForegroundColor Blue
+                  EOF
+                      else
+                          cat > releases/$platform/install.sh << 'EOF'
+                  #!/bin/bash
+                  # Docker MCP Stack Installation
+                  echo "🚀 Installing Docker MCP Stack for PLATFORM..."
+                  chmod +x scripts/setup-environment.sh
+                  ./scripts/setup-environment.sh
+                  echo "✅ Installation complete!"
+                  echo "Run 'make up-PLATFORM' to start the stack."
+                  EOF
+                          sed -i "s/PLATFORM/$platform/g" releases/$platform/install.sh
+                          chmod +x releases/$platform/install.sh
+                      fi
+
+                      # Create archive
+                      cd releases
+                      tar -czf docker-mcpai-stack-${{ steps.version.outputs.version }}-$platform.tar.gz $platform/
+                      cd ..
+                  done
+
+                  # Create universal package
+                  mkdir -p releases/universal
+                  cp -r compose/ nginx/ scripts/ docs/ releases/universal/
+                  cp docker-compose.yml Makefile .env.example README.md releases/universal/
+
+                  cd releases
+                  tar -czf docker-mcpai-stack-${{ steps.version.outputs.version }}-universal.tar.gz universal/
+
+            - name: Upload release packages
+              uses: softprops/action-gh-release@v1
+              with:
+                  files: |
+                      releases/docker-mcpai-stack-${{ steps.version.outputs.version }}-windows.tar.gz
+                      releases/docker-mcpai-stack-${{ steps.version.outputs.version }}-linux.tar.gz
+                      releases/docker-mcpai-stack-${{ steps.version.outputs.version }}-macos.tar.gz
+                      releases/docker-mcpai-stack-${{ steps.version.outputs.version }}-universal.tar.gz
+                  body: |
+                      ## 🚀 Docker MCP Stack ${{ steps.version.outputs.version }}
+
+                      Cross-platform GenAI development environment with support for Windows, Linux, and macOS.
+
+                      ### 📦 Platform-Specific Downloads
+
+                      Choose the package for your operating system:
+
+                      - **🪟 Windows**: `docker-mcpai-stack-${{ steps.version.outputs.version }}-windows.tar.gz`
+                        - WSL2 optimized with PowerShell scripts
+                        - Extract and run `.\install.ps1`
+
+                      - **🐧 Linux**: `docker-mcpai-stack-${{ steps.version.outputs.version }}-linux.tar.gz`
+                        - GPU acceleration support included
+                        - Extract and run `./install.sh`
+
+                      - **🍎 macOS**: `docker-mcpai-stack-${{ steps.version.outputs.version }}-macos.tar.gz`
+                        - Apple Silicon optimizations
+                        - Extract and run `./install.sh`
+
+                      - **🌐 Universal**: `docker-mcpai-stack-${{ steps.version.outputs.version }}-universal.tar.gz`
+                        - Auto-detects your platform
+                        - Works on all supported systems
+
+                      ### 🐳 Docker Images
+
+                      Multi-platform container images (AMD64/ARM64):
+                      ```
+                      ghcr.io/${{ github.repository }}/mcpai-api:${{ steps.version.outputs.version }}
+                      ghcr.io/${{ github.repository }}/mcpai-worker:${{ steps.version.outputs.version }}
+                      ghcr.io/${{ github.repository }}/mcpai-ui:${{ steps.version.outputs.version }}
+                      ghcr.io/${{ github.repository }}/mcpai-model-runner:${{ steps.version.outputs.version }}
+                      ```
+
+                      ### 🚀 Quick Start
+
+                      1. Download the package for your platform
+                      2. Extract the archive
+                      3. Run the installation script
+                      4. Start with `make up` or platform-specific commands
+
+                      For detailed instructions, see the [Cross-Platform Support Guide](docs/cross-platform-support.md).

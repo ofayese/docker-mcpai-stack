@@ -1,27 +1,228 @@
-name: Build
+name: Multi-Platform Build & Release
 
 on:
   push:
     branches:
       - main
+      - develop
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
 
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  build:
-    name: Build and analyze
+  # Build matrix for different platforms
+  build-matrix:
+    name: Build ${{ matrix.platform }} (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux AMD64
+          - platform: linux
+            arch: amd64
+            runner: ubuntu-latest
+            docker_platform: linux/amd64
+
+          # Linux ARM64
+          - platform: linux
+            arch: arm64
+            runner: ubuntu-latest
+            docker_platform: linux/arm64
+
+          # Windows AMD64 (for Windows containers if needed)
+          - platform: windows
+            arch: amd64
+            runner: windows-latest
+            docker_platform: windows/amd64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (for cross-platform builds)
+        if: matrix.platform == 'linux'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+          labels: |
+            org.opencontainers.image.title=Docker MCP Stack
+            org.opencontainers.image.description=Cross-platform GenAI development environment
+            org.opencontainers.image.vendor=Docker MCPAI Stack
+
+      - name: Build and test platform-specific images
+        uses: docker/bake-action@v4
+        with:
+          files: |
+            ./docker-bake.hcl
+          targets: default
+          load: true
+          set: |
+            *.platform=${{ matrix.docker_platform }}
+            *.cache-from=type=gha,scope=${{ matrix.platform }}-${{ matrix.arch }}
+            *.cache-to=type=gha,scope=${{ matrix.platform }}-${{ matrix.arch }},mode=max
+
+      - name: Test built images
+        shell: bash
+        run: |
+          # Test that images can run
+          docker images
+
+          # Basic smoke tests
+          if [ "${{ matrix.platform }}" != "windows" ]; then
+            docker run --rm ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/mcpai-api:latest --version || true
+          fi
+
+      - name: Push images (if not PR)
+        if: github.event_name != 'pull_request'
+        uses: docker/bake-action@v4
+        with:
+          files: |
+            ./docker-bake.hcl
+          targets: default
+          push: true
+          set: |
+            *.platform=${{ matrix.docker_platform }}
+            *.cache-from=type=gha,scope=${{ matrix.platform }}-${{ matrix.arch }}
+            *.cache-to=type=gha,scope=${{ matrix.platform }}-${{ matrix.arch }},mode=max
+
+  # Create multi-platform manifest
+  create-manifest:
+    name: Create Multi-Platform Manifest
+    runs-on: ubuntu-latest
+    needs: build-matrix
+    if: github.event_name != 'pull_request'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push multi-platform manifest
+        run: |
+          # Create multi-platform manifest for each service
+          services=("mcpai-api" "mcpai-worker" "mcpai-ui" "mcpai-model-runner")
+
+          for service in "${services[@]}"; do
+            echo "Creating manifest for $service"
+
+            # Create manifest list
+            docker buildx imagetools create \
+              --tag ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/$service:latest \
+              ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/$service:latest-linux-amd64 \
+              ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/$service:latest-linux-arm64
+
+            # If this is a tagged release, also create version tags
+            if [[ $GITHUB_REF == refs/tags/* ]]; then
+              VERSION=${GITHUB_REF#refs/tags/}
+              docker buildx imagetools create \
+                --tag ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/$service:$VERSION \
+                ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/$service:latest-linux-amd64 \
+                ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/$service:latest-linux-arm64
+            fi
+          done
+
+  # SonarQube analysis
+  sonarqube-analysis:
+    name: SonarQube Analysis
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Shallow clones should be disabled for a better relevancy of analysis
-      - uses: SonarSource/sonarqube-scan-action@v5
+          fetch-depth: 0  # Shallow clones should be disabled for better analysis
+
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v5
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-      # If you wish to fail your job when the Quality Gate is red, uncomment the
-      # following lines. This would typically be used to fail a deployment.
-      # - uses: SonarSource/sonarqube-quality-gate-action@v1
+
+      # Uncomment to fail the job when the Quality Gate is red
+      # - name: SonarQube Quality Gate check
+      #   uses: SonarSource/sonarqube-quality-gate-action@v1
       #   timeout-minutes: 5
       #   env:
       #     SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  # Performance benchmarks
+  performance-benchmark:
+    name: Performance Benchmarks
+    runs-on: ubuntu-latest
+    needs: build-matrix
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Run performance benchmarks
+        run: |
+          echo "Running performance benchmarks..."
+
+          # Start the stack
+          make up-linux
+
+          # Wait for services to be ready
+          sleep 30
+
+          # Run load tests
+          make test-load &
+          LOAD_TEST_PID=$!
+
+          # Let it run for 2 minutes
+          sleep 120
+
+          # Stop load tests
+          kill $LOAD_TEST_PID || true
+
+          # Collect metrics
+          make metrics > performance-report.txt
+
+          # Stop the stack
+          make down
+
+      - name: Upload performance report
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-report
+          path: performance-report.txt

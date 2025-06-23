@@ -6,7 +6,7 @@
 
 ## ✨ Features
 
-- 🚀 **Cross-platform**: Works on Linux, macOS, and Windows (WSL2)
+- 🚀 **Cross-platform**: Works on Linux, macOS, and Windows (WSL2) with auto-detection
 - 🔌 **Modular Architecture**: Mix and match services to fit your needs
 - 🧠 **Multiple Models**: Use any GGUF model with Docker Model Runner
 - 🖥️ **GPU Acceleration**: CUDA support for faster inference
@@ -16,22 +16,57 @@
 
 ## 🚀 Quick Start
 
+### Auto-Detection (Recommended)
 ```bash
 # Clone the repository
 git clone https://github.com/your-org/docker-mcpai-stack
 cd docker-mcpai-stack
 
-# Start with CPU (default)
-make up
+# Setup environment (auto-detects your OS)
+chmod +x scripts/setup-environment.sh
+./scripts/setup-environment.sh
 
-# Or start with GPU acceleration
-make gpu-up
+# Start with auto-detection
+make up
 
 # Access the UI at http://localhost:8501
 ```
 
+### Platform-Specific Quick Start
+
+#### 🪟 Windows
+```powershell
+# Setup environment
+.\scripts\setup-environment.ps1
+
+# Start the stack
+make up-windows
+```
+
+#### 🐧 Linux
+```bash
+# Setup environment
+./scripts/setup-environment.sh
+
+# Start the stack
+make up-linux
+
+# For GPU acceleration
+make gpu-up
+```
+
+#### 🍎 macOS
+```bash
+# Setup environment
+./scripts/setup-environment.sh
+
+# Start the stack
+make up-macos
+```
+
 ## 📚 Documentation
 
+- [Cross-Platform Support](docs/cross-platform-support.md)
 - [Architecture Overview](docs/architecture/overview.md)
 - [API Reference](docs/api/reference.md)
 - [Developer Guide](docs/guides/developer.md)

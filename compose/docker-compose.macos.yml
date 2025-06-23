@@ -1,0 +1,91 @@
+# Docker MCP Stack - macOS Configuration
+# Platform-specific overrides for macOS development (Intel/Apple Silicon)
+
+version: "3.9"
+
+# Use anchors for DRY and modern Compose
+x-common-env: &common-env
+  QDRANT_URL: http://qdrant:6333
+  OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434/v1}
+  MODEL_API_URL: ${MODEL_API_URL:-http://host.docker.internal:11434/v1}
+  PROMETHEUS_MULTIPROC_DIR: /tmp
+
+services:
+  # Model runner with Apple Silicon optimization
+  model-runner:
+    image: model-runner:latest
+    platform: ${DOCKER_PLATFORM:-linux/arm64}
+    environment:
+      - RUNNER_HTTP_ADDR=0.0.0.0:8080
+      - MODEL_CACHE=/models
+      - CONFIG_PATH=/config
+      # Apple Silicon optimizations
+      - GGML_METAL=1
+      - GGML_METAL_NDEBUG=1
+    volumes:
+      - models_cache:/models
+      - model_config:/config
+    deploy:
+      resources:
+        limits:
+          memory: ${MODEL_MEMORY_LIMIT:-8g}
+          cpus: "${MODEL_CPU_LIMIT:-4}"
+        reservations:
+          memory: 2g
+          cpus: "1"
+    profiles: ["core", "cpu", "dev", "macos"]
+
+  # Services with updated environment for macOS
+  mcp-api:
+    environment:
+      <<: *common-env
+    volumes:
+      - mcp_data:/data
+
+  mcp-worker:
+    environment:
+      <<: *common-env
+    volumes:
+      - mcp_data:/data
+      - worker_temp:/tmp
+
+  ui:
+    environment:
+      <<: *common-env
+      STREAMLIT_SERVER_PORT: 8501
+      STREAMLIT_SERVER_ADDRESS: 0.0.0.0
+
+  # Nginx proxy optimized for macOS
+  nginx:
+    volumes:
+      - ../nginx/nginx.macos.conf:/etc/nginx/nginx.conf:ro
+      - nginx_certs:/etc/nginx/certs
+      - nginx_logs:/var/log/nginx
+
+  # macOS-specific volume optimizations
+  qdrant:
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+volumes:
+  # macOS optimized volumes with better performance
+  models_cache:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${HOME}/.mcpai/models
+
+  mcp_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${HOME}/.mcpai/data
+
+  qdrant_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${HOME}/.mcpai/qdrant

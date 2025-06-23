@@ -2,8 +2,19 @@ version: "3.8"
 
 # Main Docker Compose file for Docker MCP Stack
 # This file extends the base configuration for easy development setup
+# Platform-specific overrides are automatically loaded based on OS detection
 
 include:
     - compose/docker-compose.base.yml
     - compose/docker-compose.dev.yml
+
+# Platform-specific includes (uncomment based on your OS):
+# - compose/docker-compose.windows.yml  # For Windows/WSL2
+# - compose/docker-compose.linux.yml    # For Linux
+# - compose/docker-compose.macos.yml    # For macOS (Intel/Apple Silicon)
+
+# Use the Makefile for automatic OS detection:
+# make up      # Auto-detects OS and uses appropriate config
+# make up-windows, make up-linux, make up-macos  # Force specific OS
+
 # Override any development-specific settings here if needed
