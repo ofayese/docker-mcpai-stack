@@ -1,5 +1,5 @@
 # Nginx Reverse Proxy for Docker MCP Stack
-FROM nginx:1.25-alpine
+FROM nginx:1.29-alpine
 
 # Install basic tools and set up directories
 RUN apk add --no-cache curl && \
