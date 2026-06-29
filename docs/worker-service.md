@@ -148,13 +148,13 @@ The worker service exposes Prometheus metrics:
 async def _handle_custom_task(self, task: Task) -> bool:
     try:
         logger.info("Processing custom task", task_id=task.id, payload=task.payload)
-        
+
         # Your custom logic here
         result = await your_custom_function(task.payload)
-        
+
         logger.info("Custom task completed", task_id=task.id, result=result)
         return True
-        
+
     except Exception as e:
         logger.error("Custom task failed", task_id=task.id, error=str(e))
         return False

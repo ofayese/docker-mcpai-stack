@@ -137,11 +137,11 @@ logger = structlog.get_logger()
 
 class MCPError(HTTPException):
     """Base error class for MCP services"""
-    
+
     def __init__(self, status_code: int, error_type: str, message: str, details: dict = None):
         self.error_type = error_type
         self.details = details or {}
-        
+
         detail = {
             "error": {
                 "type": error_type,
@@ -170,7 +170,7 @@ async def handle_model_request(model_id: str, payload: dict):
         # Model processing logic
         result = await process_model_request(model_id, payload)
         return result
-        
+
     except ModelNotFoundError:
         raise MCPError(
             status_code=404,
@@ -220,7 +220,7 @@ class CircuitBreaker:
         self.failure_count = 0
         self.last_failure_time = None
         self.state = "CLOSED"  # CLOSED, OPEN, HALF_OPEN
-    
+
     async def call(self, func, *args, **kwargs):
         if self.state == "OPEN":
             if self._should_attempt_reset():
@@ -235,7 +235,7 @@ class CircuitBreaker:
                         "suggestion": "Service is experiencing issues, try again later"
                     }
                 )
-        
+
         try:
             result = await func(*args, **kwargs)
             self._on_success()
@@ -243,21 +243,21 @@ class CircuitBreaker:
         except Exception as e:
             self._on_failure()
             raise
-    
+
     def _should_attempt_reset(self):
         return (
             self.last_failure_time and
             datetime.now() - self.last_failure_time > timedelta(seconds=self.recovery_timeout)
         )
-    
+
     def _on_success(self):
         self.failure_count = 0
         self.state = "CLOSED"
-    
+
     def _on_failure(self):
         self.failure_count += 1
         self.last_failure_time = datetime.now()
-        
+
         if self.failure_count >= self.failure_threshold:
             self.state = "OPEN"
 
@@ -282,7 +282,7 @@ import random
 
 async def retry_with_backoff(func, max_retries=3, base_delay=1, max_delay=60):
     """Retry function with exponential backoff"""
-    
+
     for attempt in range(max_retries):
         try:
             return await func()
@@ -299,12 +299,12 @@ async def retry_with_backoff(func, max_retries=3, base_delay=1, max_delay=60):
                         "suggestion": "Service may be experiencing issues"
                     }
                 )
-            
+
             # Calculate delay with jitter
             delay = min(base_delay * (2 ** attempt), max_delay)
             jitter = delay * 0.1 * random.random()
             await asyncio.sleep(delay + jitter)
-            
+
             logger.warning(
                 "Retrying after failure",
                 attempt=attempt + 1,
@@ -324,7 +324,7 @@ async def make_model_request():
             )
             response.raise_for_status()
             return response.json()
-    
+
     return await retry_with_backoff(_request)
 ```
 
@@ -413,7 +413,7 @@ groups:
           severity: critical
         annotations:
           summary: "Critical service errors detected"
-          
+
       - alert: AuthenticationErrors
         expr: rate(mcp_errors_total{error_type="authentication_error"}[5m]) > 0.02
         for: 2m
@@ -441,7 +441,7 @@ class APIErrorBoundary extends React.Component {
 
   componentDidCatch(error, errorInfo) {
     console.error('API Error:', error, errorInfo);
-    
+
     // Send error to monitoring service
     this.reportError(error, errorInfo);
   }
@@ -494,7 +494,7 @@ async function makeAPIRequest(url, options = {}) {
     }
 
     return await response.json();
-    
+
   } catch (error) {
     if (error instanceof APIError) {
       // Handle known API errors

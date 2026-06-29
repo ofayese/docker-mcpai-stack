@@ -21,11 +21,11 @@ rem ****************************************************************************
 :launch_helper
 copy "%~dp0run-helper.cmd.template" "%~dp0run-helper.cmd" /Y
 call "%~dp0run-helper.cmd" %*
-  
+
 if %ERRORLEVEL% EQU 1 (
   echo "Restarting runner..."
   goto :launch_helper
-) else (  
+) else (
   echo "Exiting runner..."
   exit /b 0
 )

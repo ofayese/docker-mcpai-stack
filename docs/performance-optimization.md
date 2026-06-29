@@ -121,7 +121,7 @@ async def get_cached_result(key: str):
     cached = await redis.get(key)
     if cached:
         return json.loads(cached)
-    
+
     result = await compute_result()
     await redis.setex(key, 3600, json.dumps(result))
     return result
@@ -157,12 +157,12 @@ CREATE INDEX CONCURRENTLY idx_responses_request_id ON responses(request_id);
 CREATE INDEX CONCURRENTLY idx_users_email ON users(email) WHERE active = true;
 
 -- Partial indexes for better performance
-CREATE INDEX CONCURRENTLY idx_active_sessions 
-ON sessions(user_id) 
+CREATE INDEX CONCURRENTLY idx_active_sessions
+ON sessions(user_id)
 WHERE expires_at > NOW();
 
 -- Composite indexes for complex queries
-CREATE INDEX CONCURRENTLY idx_requests_status_created 
+CREATE INDEX CONCURRENTLY idx_requests_status_created
 ON requests(status, created_at DESC);
 ```
 
@@ -170,17 +170,17 @@ ON requests(status, created_at DESC);
 
 ```sql
 -- Use EXPLAIN ANALYZE to optimize queries
-EXPLAIN (ANALYZE, BUFFERS) 
-SELECT * FROM requests 
-WHERE status = 'pending' 
-ORDER BY created_at 
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT * FROM requests
+WHERE status = 'pending'
+ORDER BY created_at
 LIMIT 10;
 
 -- Optimize with CTEs and window functions
 WITH recent_requests AS (
     SELECT request_id, created_at,
            ROW_NUMBER() OVER (ORDER BY created_at DESC) as rn
-    FROM requests 
+    FROM requests
     WHERE created_at > NOW() - INTERVAL '1 hour'
 )
 SELECT * FROM recent_requests WHERE rn <= 100;
@@ -397,7 +397,7 @@ def monitor_gpu_memory():
         allocated = torch.cuda.memory_allocated()
         cached = torch.cuda.memory_reserved()
         total = torch.cuda.get_device_properties(0).total_memory
-        
+
         print(f"Allocated: {allocated / 1e9:.2f} GB")
         print(f"Cached: {cached / 1e9:.2f} GB")
         print(f"Total: {total / 1e9:.2f} GB")
@@ -441,14 +441,14 @@ ALTER SYSTEM SET log_statement = 'all';
 ALTER SYSTEM SET log_min_duration_statement = 1000;  -- Log slow queries
 
 -- Analyze query performance
-SELECT 
+SELECT
     query,
     calls,
     total_time,
     mean_time,
     rows
-FROM pg_stat_statements 
-ORDER BY total_time DESC 
+FROM pg_stat_statements
+ORDER BY total_time DESC
 LIMIT 10;
 ```
 
@@ -491,21 +491,21 @@ from locust import HttpUser, task, between
 
 class APIUser(HttpUser):
     wait_time = between(1, 3)
-    
+
     def on_start(self):
         # Setup test data
         self.auth_token = self.get_auth_token()
-    
+
     @task(3)
     def get_health(self):
         self.client.get("/health")
-    
+
     @task(2)
     def create_request(self):
         payload = {"data": "test"}
         headers = {"Authorization": f"Bearer {self.auth_token}"}
         self.client.post("/api/requests", json=payload, headers=headers)
-    
+
     @task(1)
     def heavy_computation(self):
         self.client.post("/api/compute", json={"complexity": "high"})
@@ -559,11 +559,11 @@ echo 1 > /proc/sys/net/ipv4/tcp_tw_reuse  # Reuse TIME_WAIT sockets
 - alert: HighResponseTime
   expr: histogram_quantile(0.95, http_request_duration_seconds) > 1.0
   for: 5m
-  
+
 - alert: HighErrorRate
   expr: rate(http_requests_total{status=~"5.."}[5m]) > 0.1
   for: 2m
-  
+
 - alert: DatabaseSlowQueries
   expr: pg_stat_database_tup_returned / pg_stat_database_tup_fetched < 0.1
   for: 5m

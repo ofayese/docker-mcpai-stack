@@ -1,7 +1,5 @@
 """Integration tests for the full MCP API stack."""
 
-import asyncio
-import time
 from typing import Any, Dict
 
 import httpx

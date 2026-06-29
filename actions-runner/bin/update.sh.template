@@ -1,12 +1,12 @@
 #!/bin/bash
 
 # runner will replace key words in the template and generate a batch script to run.
-# Keywords: 
+# Keywords:
 #  PROCESSID = pid
 #  RUNNERPROCESSNAME = Runner.Listener[.exe]
 #  ROOTFOLDER = ./
 #  EXISTRUNNERVERSION = 2.100.0
-#  DOWNLOADRUNNERVERSION = 2.101.0 
+#  DOWNLOADRUNNERVERSION = 2.101.0
 #  UPDATELOG = _diag/SelfUpdate-UTC.log
 #  RESTARTINTERACTIVERUNNER = 0/1
 

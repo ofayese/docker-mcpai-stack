@@ -3,14 +3,13 @@ Streamlit UI for Docker MCP Stack
 Modern interface for interacting with LLMs and MCP services
 """
 
-import streamlit as st
-import requests
-import json
 import os
-import plotly.graph_objects as go
+from typing import Any, Dict
+
 import pandas as pd
-import time
-from typing import Dict, Any
+import plotly.graph_objects as go
+import requests
+import streamlit as st
 
 # Configuration
 MODEL_API_URL = os.getenv("MODEL_API_URL", "http://model-runner:8080/v1")
@@ -20,11 +19,12 @@ st.set_page_config(
     page_title="Docker MCP Stack",
     page_icon="🤖",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
 # Custom CSS
-st.markdown("""
+st.markdown(
+    """
 <style>
     .main-header {
         font-size: 2.5rem;
@@ -49,7 +49,10 @@ st.markdown("""
         font-weight: bold;
     }
 </style>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
+
 
 def check_service_health(url: str, service_name: str) -> bool:
     """Check if a service is healthy"""
@@ -58,6 +61,7 @@ def check_service_health(url: str, service_name: str) -> bool:
         return response.status_code == 200
     except:
         return False
+
 
 def get_available_models() -> list:
     """Get list of available models"""
@@ -70,6 +74,7 @@ def get_available_models() -> list:
         pass
     return []
 
+
 def send_chat_message(message: str, model: str) -> str:
     """Send a chat message to the API and get a response"""
     try:
@@ -77,15 +82,11 @@ def send_chat_message(message: str, model: str) -> str:
             "model": model,
             "messages": [{"role": "user", "content": message}],
             "max_tokens": max_tokens,
-            "temperature": temperature
+            "temperature": temperature,
         }
         # Send the request via MCP API
         url = f"{MCP_API_URL}/v1/chat/completions"
-        response = requests.post(
-            url,
-            json=payload,
-            timeout=60
-        )
+        response = requests.post(url, json=payload, timeout=60)
         if response.status_code == 200:
             data = response.json()
             return data["choices"][0]["message"]["content"]
@@ -93,13 +94,14 @@ def send_chat_message(message: str, model: str) -> str:
         return f"Error: {str(e)}"
     return "No response received"
 
+
 def get_prometheus_metrics() -> Dict[str, Any]:
     """Fetch API request counts by endpoint from Prometheus."""
     try:
         resp = requests.get(
-            f"http://prometheus:9090/api/v1/query",
+            "http://prometheus:9090/api/v1/query",
             params={"query": "sum(mcp_api_requests_total) by (endpoint)"},
-            timeout=5
+            timeout=5,
         )
         results = resp.json().get("data", {}).get("result", [])
         endpoints = [item["metric"].get("endpoint", "") for item in results]
@@ -108,8 +110,11 @@ def get_prometheus_metrics() -> Dict[str, Any]:
     except Exception:
         return {}
 
+
 # Main header
-st.markdown('<div class="main-header">🤖 Docker MCP Stack</div>', unsafe_allow_html=True)
+st.markdown(
+    '<div class="main-header">🤖 Docker MCP Stack</div>', unsafe_allow_html=True
+)
 
 # Sidebar
 with st.sidebar:
@@ -121,15 +126,17 @@ with st.sidebar:
     services = [
         ("Model Runner", MODEL_API_URL),
         ("MCP API", MCP_API_URL),
-        ("Vector DB", "http://qdrant:6333")
+        ("Vector DB", "http://qdrant:6333"),
     ]
 
     for service_name, service_url in services:
         is_healthy = check_service_health(service_url, service_name)
         status_class = "status-healthy" if is_healthy else "status-unhealthy"
         status_text = "🟢 Healthy" if is_healthy else "🔴 Unhealthy"
-        st.markdown(f"{service_name}: <span class='{status_class}'>{status_text}</span>",
-                   unsafe_allow_html=True)
+        st.markdown(
+            f"{service_name}: <span class='{status_class}'>{status_text}</span>",
+            unsafe_allow_html=True,
+        )
 
     st.divider()
 
@@ -202,7 +209,9 @@ with col2:
             st.metric("Active Requests", metrics_data.get("active_requests", 0))
             st.metric("Model Inferences", metrics_data.get("model_inferences_total", 0))
             sysinfo = metrics_data.get("system_info", {})
-            st.caption(f"Python: {sysinfo.get('python_version', 'N/A')} | Platform: {sysinfo.get('platform', 'N/A')}")
+            st.caption(
+                f"Python: {sysinfo.get('python_version', 'N/A')} | Platform: {sysinfo.get('platform', 'N/A')}"
+            )
         else:
             st.warning("Could not fetch metrics from MCP API.")
     except Exception as e:
@@ -232,7 +241,11 @@ metrics = get_prometheus_metrics()
 if metrics.get("endpoint"):
     df = pd.DataFrame(metrics)
     fig = go.Figure([go.Bar(x=df["endpoint"], y=df["requests"])])
-    fig.update_layout(title="API Requests by Endpoint", xaxis_title="Endpoint", yaxis_title="Requests Total")
+    fig.update_layout(
+        title="API Requests by Endpoint",
+        xaxis_title="Endpoint",
+        yaxis_title="Requests Total",
+    )
     st.plotly_chart(fig, use_container_width=True)
 else:
     st.info("Metrics data not available or no requests recorded yet.")
@@ -241,5 +254,5 @@ else:
 st.markdown("---")
 st.markdown(
     "Built with ❤️ using Docker, Streamlit, and the Model Context Protocol",
-    help="Docker MCP Stack - Cross-platform GenAI development environment"
+    help="Docker MCP Stack - Cross-platform GenAI development environment",
 )

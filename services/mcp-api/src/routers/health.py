@@ -1,8 +1,9 @@
 """Health check router"""
 
+import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
-import httpx
+
 from ..core.config import settings
 
 router = APIRouter()
@@ -12,8 +13,7 @@ router = APIRouter()
 async def health_check():
     """Basic health check endpoint"""
     return JSONResponse(
-        status_code=200,
-        content={"status": "healthy", "service": "mcp-api"}
+        status_code=200, content={"status": "healthy", "service": "mcp-api"}
     )
 
 
@@ -22,10 +22,7 @@ async def readiness_check(request: Request):
     """Readiness check that verifies dependencies are available"""
     health_status = {
         "status": "ready",
-        "services": {
-            "qdrant": False,
-            "model_runner": False
-        }
+        "services": {"qdrant": False, "model_runner": False},
     }
     # Check Qdrant connection
     try:
@@ -39,10 +36,7 @@ async def readiness_check(request: Request):
     try:
         async with httpx.AsyncClient() as client:
             url = f"{settings.MODEL_API_URL}/health"
-            resp = await client.get(
-                url,
-                timeout=5
-            )
+            resp = await client.get(url, timeout=5)
         if resp.status_code == 200:
             health_status["services"]["model_runner"] = True
         else:

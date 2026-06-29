@@ -144,12 +144,12 @@ services:
   nginx:
     networks:
       - frontend
-  
+
   mcp-api:
     networks:
       - frontend
       - backend
-  
+
   qdrant:
     networks:
       - backend
@@ -205,10 +205,10 @@ Monitor for suspicious activity:
 # Prometheus alerts for security events
 - alert: HighErrorRate
   expr: rate(mcp_api_requests_total{status=~"4..|5.."}[5m]) > 0.1
-  
+
 - alert: UnauthorizedAccess
   expr: rate(mcp_api_requests_total{status="401"}[5m]) > 0.05
-  
+
 - alert: ModelAbuseDetection
   expr: rate(mcp_model_inferences_total[1m]) > 100
 ```
@@ -223,20 +223,20 @@ Enable comprehensive audit logging:
 async def audit_middleware(request: Request, call_next):
     start_time = time.time()
     client_ip = request.headers.get("X-Forwarded-For", request.client.host)
-    
-    logger.info("api_request", 
+
+    logger.info("api_request",
                 method=request.method,
                 url=str(request.url),
                 client_ip=client_ip,
                 user_agent=request.headers.get("User-Agent"))
-    
+
     response = await call_next(request)
-    
+
     logger.info("api_response",
                 status_code=response.status_code,
                 duration=time.time() - start_time,
                 client_ip=client_ip)
-    
+
     return response
 ```
 

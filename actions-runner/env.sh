@@ -1,14 +1,14 @@
 #!/bin/bash
 
 varCheckList=(
-    'LANG' 
-    'JAVA_HOME' 
-    'ANT_HOME' 
-    'M2_HOME' 
-    'ANDROID_HOME' 
+    'LANG'
+    'JAVA_HOME'
+    'ANT_HOME'
+    'M2_HOME'
+    'ANDROID_HOME'
     'ANDROID_SDK_ROOT'
-    'GRADLE_HOME' 
-    'NVM_BIN' 
+    'GRADLE_HOME'
+    'NVM_BIN'
     'NVM_PATH'
     'LD_LIBRARY_PATH'
     'PERL5LIB'
@@ -31,7 +31,7 @@ function writeVar()
         if [ ! -z "${!checkVar}" ]; then
             echo "${checkVar}=${!checkVar}">>.env
         fi
-    fi 
+    fi
 }
 
 echo $PATH>.path
