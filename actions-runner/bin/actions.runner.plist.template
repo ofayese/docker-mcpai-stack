@@ -13,13 +13,13 @@
     <key>WorkingDirectory</key>
     <string>{{RunnerRoot}}</string>
     <key>RunAtLoad</key>
-    <true/>    
+    <true/>
     <key>StandardOutPath</key>
     <string>{{UserHome}}/Library/Logs/{{SvcName}}/stdout.log</string>
     <key>StandardErrorPath</key>
     <string>{{UserHome}}/Library/Logs/{{SvcName}}/stderr.log</string>
     <key>EnvironmentVariables</key>
-    <dict> 
+    <dict>
       <key>ACTIONS_RUNNER_SVC</key>
       <string>1</string>
     </dict>

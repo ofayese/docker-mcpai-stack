@@ -325,7 +325,7 @@ API_REPLICAS=5 docker compose -f compose/docker-compose.production.yml up -d
    ```bash
    # Update base system
    sudo apt update && sudo apt upgrade -y
-   
+
    # Update Docker images
    docker compose -f compose/docker-compose.production.yml pull
    docker compose -f compose/docker-compose.production.yml up -d
@@ -389,7 +389,7 @@ docker logs mcpai-traefik | grep -i certificate
    ```bash
    # Quick restart
    docker compose -f compose/docker-compose.production.yml restart
-   
+
    # Full rebuild if needed
    docker compose -f compose/docker-compose.production.yml down
    docker compose -f compose/docker-compose.production.yml up -d
@@ -400,7 +400,7 @@ docker logs mcpai-traefik | grep -i certificate
    ```bash
    # Immediate isolation
    docker compose -f compose/docker-compose.production.yml down
-   
+
    # Check for compromised containers
    docker system events
    ```

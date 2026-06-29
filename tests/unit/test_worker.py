@@ -5,7 +5,7 @@ Comprehensive test suite for MCP Worker service
 import asyncio
 import time
 from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from services.mcp_worker.src.worker import MCPWorker, Task, TaskProcessor

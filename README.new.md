@@ -25,23 +25,23 @@ graph TB
     API --> MR[Model Runner :8080]
     API --> VDB[Qdrant :6333]
     API --> WORKER[MCP Worker]
-    
+
     NGINX[Nginx Proxy :11434] --> MR
-    
+
     PROM[Prometheus :9090] --> GRAF[Grafana :3000]
     MR --> PROM
     API --> PROM
-    
+
     MR --> MODELS[(Model Cache)]
     VDB --> VDATA[(Vector Data)]
-    
+
     subgraph "Development Mode"
         DEV[Hot Reload]
         DEV --> API
         DEV --> WORKER
         DEV --> UI
     end
-    
+
     subgraph "GPU Mode"
         GPU[NVIDIA Runtime]
         GPU --> MR
@@ -94,7 +94,7 @@ make windows
 # 1. Install Ollama
 brew install ollama
 
-# 2. Start Ollama service  
+# 2. Start Ollama service
 ollama serve
 
 # 3. Start MCP Stack
@@ -211,7 +211,7 @@ ENVIRONMENT=development
 OLLAMA_BASE_URL=http://model-runner:8080/v1  # Linux
 # OLLAMA_BASE_URL=http://host.docker.internal:11434/v1  # Windows/Mac
 
-# GPU Configuration  
+# GPU Configuration
 CUDA_VISIBLE_DEVICES=0
 LLAMA_SERVER_VARIANT=cuda  # or 'cpu'
 
@@ -230,7 +230,7 @@ UI_PORT=8501
 The stack uses profiles for different deployment scenarios:
 
 - **`cpu`**: CPU-only inference
-- **`gpu`**: GPU-accelerated inference  
+- **`gpu`**: GPU-accelerated inference
 - **`dev`**: Development with hot-reload
 - **`ui`**: UI services only
 - **`monitoring`**: Prometheus + Grafana
@@ -282,7 +282,7 @@ code .
 The development mode mounts source code with hot-reload:
 
 - **MCP API**: FastAPI auto-reload on Python changes
-- **UI**: Streamlit file watcher for instant updates  
+- **UI**: Streamlit file watcher for instant updates
 - **Worker**: Automatic process restart on code changes
 
 ### 3. Testing
@@ -334,7 +334,7 @@ curl http://localhost:8080/v1/models
 Pre-configured dashboards for:
 
 - LLM Performance Metrics
-- System Resource Usage  
+- System Resource Usage
 - API Request Analytics
 - Vector Database Performance
 
@@ -412,7 +412,7 @@ kubectl apply -f .
 The stack works on:
 
 - **AWS**: ECS, EKS, EC2
-- **Azure**: Container Instances, AKS  
+- **Azure**: Container Instances, AKS
 - **GCP**: Cloud Run, GKE
 - **DigitalOcean**: App Platform, Kubernetes
 

@@ -79,17 +79,17 @@ UI_CPU_LIMIT=1
 # In services/mcp-api/src/core/config.py
 class Settings(BaseSettings):
     # ... existing settings ...
-    
+
     # Connection pool settings
     HTTP_POOL_CONNECTIONS: int = 100
     HTTP_POOL_MAXSIZE: int = 100
     HTTP_MAX_RETRIES: int = 3
     HTTP_TIMEOUT: int = 30
-    
+
     # Rate limiting
     RATE_LIMIT_REQUESTS: int = 1000
     RATE_LIMIT_WINDOW: int = 3600  # 1 hour
-    
+
     # Model-specific limits
     MAX_TOKENS_PER_REQUEST: int = 4096
     MAX_CONCURRENT_REQUESTS: int = 10
@@ -106,14 +106,14 @@ async def get_http_client():
         max_connections=settings.HTTP_POOL_MAXSIZE,
         keepalive_expiry=30.0
     )
-    
+
     timeout = httpx.Timeout(
         connect=5.0,
         read=settings.HTTP_TIMEOUT,
         write=5.0,
         pool=1.0
     )
-    
+
     async with httpx.AsyncClient(
         limits=limits,
         timeout=timeout,
@@ -153,7 +153,7 @@ MODEL_MEMORY_CONFIG = {
         "batch_size": 1
     },
     "llama3-8b": {
-        "memory_limit": "8g", 
+        "memory_limit": "8g",
         "context_length": 4096,
         "batch_size": 1
     },
@@ -179,32 +179,32 @@ import asyncio
 
 class ResourceManager:
     """Manage memory and resources"""
-    
+
     def __init__(self):
         self.gc_interval = 60  # seconds
         self.gc_task = None
-    
+
     async def start_gc_monitoring(self):
         """Start garbage collection monitoring"""
         self.gc_task = asyncio.create_task(self._gc_loop())
-    
+
     async def _gc_loop(self):
         """Periodic garbage collection"""
         while True:
             await asyncio.sleep(self.gc_interval)
-            
+
             # Force garbage collection
             collected = gc.collect()
-            
+
             if collected > 0:
                 logger.info("Garbage collection", objects_collected=collected)
-            
+
             # Check memory usage
             import psutil
             memory = psutil.virtual_memory()
-            
+
             if memory.percent > 80:
-                logger.warning("High memory usage", 
+                logger.warning("High memory usage",
                              percent=memory.percent,
                              available_gb=memory.available / (1024**3))
 ```
@@ -234,16 +234,16 @@ async def collect_resource_metrics():
     """Collect and update resource metrics"""
     import psutil
     import os
-    
+
     # Memory usage
     process = psutil.Process(os.getpid())
     memory_info = process.memory_info()
     memory_usage.labels(service='mcp-api').set(memory_info.rss)
-    
+
     # CPU usage
     cpu_percent = process.cpu_percent()
     cpu_usage.labels(service='mcp-api').set(cpu_percent)
-    
+
     # Disk usage
     disk = psutil.disk_usage('/')
     disk_usage.labels(service='mcp-api', mount='/').set(disk.used)
@@ -386,20 +386,20 @@ class ModelManager:
     def __init__(self):
         self.loaded_models = {}
         self.model_cache_size = 3
-    
+
     async def load_model(self, model_id: str):
         """Load model with memory management"""
         if model_id in self.loaded_models:
             return self.loaded_models[model_id]
-        
+
         # Check cache size
         if len(self.loaded_models) >= self.model_cache_size:
             # Evict least recently used model
-            lru_model = min(self.loaded_models.items(), 
+            lru_model = min(self.loaded_models.items(),
                           key=lambda x: x[1].last_used)
             del self.loaded_models[lru_model[0]]
             logger.info("Evicted model from cache", model=lru_model[0])
-        
+
         # Load new model
         model = await self._load_model_impl(model_id)
         self.loaded_models[model_id] = model
@@ -415,28 +415,28 @@ class InferenceBatcher:
         self.batch_size = batch_size
         self.timeout = timeout
         self.pending_requests = []
-    
+
     async def add_request(self, request):
         """Add request to batch"""
         future = asyncio.Future()
         self.pending_requests.append((request, future))
-        
+
         if len(self.pending_requests) >= self.batch_size:
             await self._process_batch()
-        
+
         return await future
-    
+
     async def _process_batch(self):
         """Process accumulated requests"""
         if not self.pending_requests:
             return
-        
+
         batch = self.pending_requests[:self.batch_size]
         self.pending_requests = self.pending_requests[self.batch_size:]
-        
+
         requests = [req for req, _ in batch]
         futures = [fut for _, fut in batch]
-        
+
         try:
             results = await self._batch_inference(requests)
             for future, result in zip(futures, results):
@@ -457,7 +457,7 @@ class ResponseCache:
     def __init__(self, ttl=300):  # 5 minutes
         self.cache: Dict[str, tuple[Any, float]] = {}
         self.ttl = ttl
-    
+
     def get(self, key: str) -> Any:
         """Get cached response"""
         if key in self.cache:
@@ -467,11 +467,11 @@ class ResponseCache:
             else:
                 del self.cache[key]
         return None
-    
+
     def set(self, key: str, value: Any):
         """Cache response"""
         self.cache[key] = (value, time.time())
-    
+
     def generate_key(self, model: str, messages: list) -> str:
         """Generate cache key for request"""
         import hashlib
@@ -499,7 +499,7 @@ class ResponseCache:
         ]
       },
       {
-        "title": "CPU Usage by Service", 
+        "title": "CPU Usage by Service",
         "type": "graph",
         "targets": [
           {

@@ -86,12 +86,12 @@ function install()
             restorecon -r -v "${UNIT_PATH}" || failed "failed to restore SELinux context on ${UNIT_PATH}"
         fi
     fi
-    
+
     # unit file should not be executable and world writable
     chmod 664 "${UNIT_PATH}" || failed "failed to set permissions on ${UNIT_PATH}"
     systemctl daemon-reload || failed "failed to reload daemons"
-    
-    # Since we started with sudo, runsvc.sh will be owned by root. Change this to current login user.    
+
+    # Since we started with sudo, runsvc.sh will be owned by root. Change this to current login user.
     cp ./bin/runsvc.sh ./runsvc.sh || failed "failed to copy runsvc.sh"
     chown ${run_as_uid}:${run_as_gid} ./runsvc.sh || failed "failed to set owner for runsvc.sh"
     chmod 755 ./runsvc.sh || failed "failed to set permission for runsvc.sh"
@@ -105,12 +105,12 @@ function install()
 function start()
 {
     systemctl start ${SVC_NAME} || failed "failed to start ${SVC_NAME}"
-    status    
+    status
 }
 
 function stop()
 {
-    systemctl stop ${SVC_NAME} || failed "failed to stop ${SVC_NAME}"    
+    systemctl stop ${SVC_NAME} || failed "failed to stop ${SVC_NAME}"
     status
 }
 
@@ -122,7 +122,7 @@ function uninstall()
         rm "${UNIT_PATH}" || failed "failed to delete ${UNIT_PATH}"
     else
         echo "Service ${SVC_NAME} is not installed"
-    fi    
+    fi
     if [ -f "${CONFIG_PATH}" ]; then
       rm "${CONFIG_PATH}" || failed "failed to delete ${CONFIG_PATH}"
     fi

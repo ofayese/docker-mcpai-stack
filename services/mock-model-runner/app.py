@@ -1,10 +1,10 @@
-from fastapi import FastAPI, Request, HTTPException
-import time
-import random
-import uuid
 import os
+import random
+import time
+import uuid
 from datetime import datetime
-from typing import Dict, Any
+
+from fastapi import FastAPI, HTTPException, Request
 
 app = FastAPI(title="Mock Model Runner", version="1.0.0")
 
@@ -18,34 +18,34 @@ MODELS = [
         "id": "gpt-3.5-turbo",
         "object": "model",
         "created": 1640995200,
-        "owned_by": "mock-org"
+        "owned_by": "mock-org",
     },
     {
         "id": "llama-7b",
         "object": "model",
         "created": 1640995200,
-        "owned_by": "mock-org"
+        "owned_by": "mock-org",
     },
     {
         "id": "mistral-7b",
         "object": "model",
         "created": 1640995200,
-        "owned_by": "mock-org"
-    }
+        "owned_by": "mock-org",
+    },
 ]
+
 
 @app.get("/health")
 async def health():
     """Health check endpoint"""
     return {"status": "healthy", "service": "mock-model-runner"}
 
+
 @app.get("/v1/models")
 async def list_models():
     """List available models"""
-    return {
-        "data": MODELS,
-        "object": "list"
-    }
+    return {"data": MODELS, "object": "list"}
+
 
 @app.get("/v1/models/{model_id}")
 async def get_model(model_id: str):
@@ -54,6 +54,7 @@ async def get_model(model_id: str):
         if model["id"] == model_id:
             return model
     raise HTTPException(status_code=404, detail="Model not found")
+
 
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
@@ -86,7 +87,7 @@ async def chat_completions(request: Request):
             f"I understand you're asking about: {last_message}",
             "That's an interesting question. Let me help you with that.",
             f"Based on your message '{last_message}', here's my response.",
-            "I'm a mock AI assistant, but I'll do my best to help!"
+            "I'm a mock AI assistant, but I'll do my best to help!",
         ]
         response = random.choice(responses)
 
@@ -99,19 +100,17 @@ async def chat_completions(request: Request):
         "choices": [
             {
                 "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": response
-                },
-                "finish_reason": "stop"
+                "message": {"role": "assistant", "content": response},
+                "finish_reason": "stop",
             }
         ],
         "usage": {
             "prompt_tokens": len(last_message.split()),
             "completion_tokens": len(response.split()),
-            "total_tokens": len(last_message.split()) + len(response.split())
-        }
+            "total_tokens": len(last_message.split()) + len(response.split()),
+        },
     }
+
 
 @app.get("/metrics")
 async def metrics():
@@ -130,6 +129,8 @@ mock_response_duration_seconds_sum 15.5
 mock_response_duration_seconds_count 30
 """
 
+
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8080)

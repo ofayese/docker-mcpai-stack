@@ -7,15 +7,15 @@ import os
 from contextlib import asynccontextmanager
 
 import structlog
+import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
-from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
-import uvicorn
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
-from .routers import chat, models, health, mcp, metrics
 from .core.config import settings
-from .core.monitoring import setup_metrics, MetricsMiddleware
+from .core.monitoring import MetricsMiddleware, setup_metrics
+from .routers import chat, health, mcp, metrics, models
 
 # Configure structured logging
 structlog.configure(
@@ -28,7 +28,7 @@ structlog.configure(
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
         structlog.processors.UnicodeDecoder(),
-        structlog.processors.JSONRenderer()
+        structlog.processors.JSONRenderer(),
     ],
     context_class=dict,
     logger_factory=structlog.stdlib.LoggerFactory(),
@@ -37,7 +37,6 @@ structlog.configure(
 )
 
 logger = structlog.get_logger()
-
 
 
 @asynccontextmanager
@@ -52,6 +51,7 @@ async def lifespan(app: FastAPI):
     # Set up Qdrant client for vector store
     try:
         from qdrant_client import QdrantClient
+
         app.state.qdrant = QdrantClient(url=settings.QDRANT_URL)
         logger.info("Initialized Qdrant client", url=settings.QDRANT_URL)
     except Exception as e:
@@ -60,6 +60,7 @@ async def lifespan(app: FastAPI):
     # Check Model Runner health
     try:
         import httpx
+
         async with httpx.AsyncClient() as client:
             resp = await client.get(f"{settings.MODEL_API_URL}/health", timeout=5)
         if resp.status_code != 200:
@@ -79,7 +80,7 @@ app = FastAPI(
     title="MCP API Gateway",
     description="Unified API for Model Context Protocol services",
     version=settings.VERSION,
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 # Add metrics middleware
@@ -95,14 +96,12 @@ app.add_middleware(
 )
 
 
-
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     """Global exception handler"""
     logger.error("Unhandled exception", exc_info=exc, path=request.url.path)
     return JSONResponse(
-        status_code=500,
-        content={"error": "Internal server error", "detail": str(exc)}
+        status_code=500, content={"error": "Internal server error", "detail": str(exc)}
     )
 
 
@@ -126,7 +125,7 @@ async def root():
     return {
         "name": "MCP API Gateway",
         "version": settings.VERSION,
-        "status": "operational"
+        "status": "operational",
     }
 
 
@@ -135,5 +134,5 @@ if __name__ == "__main__":
         "src.main:app",
         host="0.0.0.0",
         port=4000,
-        reload=True if os.getenv("ENVIRONMENT") == "development" else False
+        reload=True if os.getenv("ENVIRONMENT") == "development" else False,
     )

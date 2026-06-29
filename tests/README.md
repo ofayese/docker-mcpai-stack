@@ -7,7 +7,7 @@ This directory contains comprehensive tests for the Docker MCP AI Stack.
 ```
 tests/
 ├── unit/                   # Unit tests for individual components
-├── integration/            # Integration tests for service communication  
+├── integration/            # Integration tests for service communication
 ├── e2e/                   # End-to-end tests for complete workflows
 ├── load/                  # Load tests using Locust
 ├── conftest.py            # Test configuration and fixtures
@@ -98,7 +98,7 @@ Docker Compose profiles for different test types:
 - `test` - Basic test services
 - `unit` - Unit tests only
 - `integration` - Integration tests
-- `e2e` - End-to-end tests  
+- `e2e` - End-to-end tests
 - `load` - Load testing
 - `reports` - Test reporting service
 

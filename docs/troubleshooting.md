@@ -158,15 +158,15 @@ docker network inspect docker-mcpai-stack_default
 ```bash
 # Check slow queries
 docker compose exec postgres psql -U admin -d mcp -c "
-SELECT query, calls, total_time, mean_time 
-FROM pg_stat_statements 
-ORDER BY total_time DESC 
+SELECT query, calls, total_time, mean_time
+FROM pg_stat_statements
+ORDER BY total_time DESC
 LIMIT 10;"
 
 # Check active connections
 docker compose exec postgres psql -U admin -d mcp -c "
-SELECT count(*) as active_connections 
-FROM pg_stat_activity 
+SELECT count(*) as active_connections
+FROM pg_stat_activity
 WHERE state = 'active';"
 ```
 

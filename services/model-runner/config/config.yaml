@@ -6,7 +6,7 @@ models:
     type: "llama"
     context_length: 2048
     gpu_layers: 0
-    
+
   - name: "llama3-8b"
     path: "/models/llama3-8b.gguf"
     type: "llama"

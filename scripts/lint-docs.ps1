@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory = $true)]
     [ValidateSet("check", "fix", "report", "help")]
     [string]$Action,
-    
+
     [string]$Path = ".",
     [string]$Output = "markdown-lint-report.txt"
 )
@@ -46,10 +46,10 @@ function Test-Prerequisites {
 
 function Invoke-MarkdownLint {
     param([string]$Command)
-    
+
     Write-Host "Running: $Command" -ForegroundColor Yellow
     Invoke-Expression $Command
-    
+
     if ($LASTEXITCODE -ne 0) {
         Write-Host "Markdown linting completed with issues." -ForegroundColor Red
         exit $LASTEXITCODE
@@ -66,20 +66,20 @@ switch ($Action) {
         $cmd = "markdownlint '$Path/**/*.md' --ignore node_modules --config .markdownlint.json"
         Invoke-MarkdownLint $cmd
     }
-    
+
     "fix" {
         Test-Prerequisites
         $cmd = "markdownlint '$Path/**/*.md' --ignore node_modules --config .markdownlint.json --fix"
         Invoke-MarkdownLint $cmd
     }
-    
+
     "report" {
         Test-Prerequisites
         $cmd = "markdownlint '$Path/**/*.md' --ignore node_modules --config .markdownlint.json --output '$Output'"
         Invoke-MarkdownLint $cmd
         Write-Host "Report generated: $Output" -ForegroundColor Green
     }
-    
+
     "help" {
         Show-Help
     }

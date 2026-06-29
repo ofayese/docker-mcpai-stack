@@ -1,12 +1,12 @@
 @echo off
 
 rem runner will replace key words in the template and generate a batch script to run.
-rem Keywords: 
+rem Keywords:
 rem  PROCESSID = pid
 rem  RUNNERPROCESSNAME = Runner.Listener[.exe]
 rem  ROOTFOLDER = ./
 rem  EXISTRUNNERVERSION = 2.100.0
-rem  DOWNLOADRUNNERVERSION = 2.101.0 
+rem  DOWNLOADRUNNERVERSION = 2.101.0
 rem  UPDATELOG = _diag/SelfUpdate-UTC.log
 rem  RESTARTINTERACTIVERUNNER = 0/1
 
@@ -68,7 +68,7 @@ if ERRORLEVEL 1 (
     echo [%date% %time%] Can't move "%rootfolder%\bin" to "%rootfolder%\bin.%existrunnerversion%" >> "%logfile%" 2>&1
     goto fail
   )
-  
+
 ) else (
   rem otherwise it find a bin folder that is a junction folder
   rem we just need to delete the junction point.
@@ -90,7 +90,7 @@ if ERRORLEVEL 1 (
   if ERRORLEVEL 1 (
     echo [%date% %time%] Can't move "%rootfolder%\externals" to "%rootfolder%\externals.%existrunnerversion%" >> "%logfile%" 2>&1
     goto fail
-  )  
+  )
 ) else (
   rem otherwise it find a externals folder that is a junction folder
   rem we just need to delete the junction point.
@@ -143,4 +143,3 @@ goto :eof
 echo [%date% %time%] Rename "%logfile%" to be "%logfile%.failed" >> "%logfile%" 2>&1
 move "%logfile%" "%logfile%.failed" >nul
 goto :eof
-
